@@ -1029,3 +1029,307 @@ function debounce(fn, ms) {
   let t;
   return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
 }
+
+/* ═══════════════════════════════════════════════════════════ TOURNAMENTS ══ */
+let tournBanner = null;
+
+export async function showTournaments() {
+  box('tournamentsBody').innerHTML = `
+    <div class="row" style="justify-content:flex-end;margin-bottom:14px">
+      <button class="btn" id="tNew">Create tournament</button>
+    </div>
+    <div id="tTable"></div>`;
+  $('#tNew').addEventListener('click', () => tournForm(null));
+  await loadTournaments();
+}
+
+async function loadTournaments() {
+  await load('tTable', () => rpcAuth('tuna_admin_tournaments'), (rows) => {
+    if (!rows.length) return empty('No tournaments',
+      'Create one and it appears on the player home screen straight away.');
+    return wrap(`<table>
+      <thead><tr><th>Tournament</th><th>Game</th><th>Starts</th><th>Registration</th>
+        <th>Slots</th><th>Prize</th><th>Entry</th><th>Room</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td><div class="row" style="gap:9px;flex-wrap:nowrap">
+          ${r.banner_url ? `<img src="${esc(r.banner_url)}" class="adthumb" style="width:74px">` : ''}
+          <span><b>${esc(r.title)}</b>
+          ${r.pending > 0 ? `<br><span class="pill pill--wait">${r.pending} to approve</span>` : ''}</span>
+        </div></td>
+        <td><b>${esc(r.game === 'pubg' ? 'PUBG' : 'Free Fire')}</b>
+          <br><span class="xs muted">${esc(r.mode || '')}${r.map ? ' · ' + esc(r.map) : ''}</span></td>
+        <td class="xs">${esc(when(r.starts_at))}</td>
+        <td class="xs">${r.reg_opens_at ? esc(when(r.reg_opens_at)) : 'anytime'}
+          <br>to ${r.reg_closes_at ? esc(when(r.reg_closes_at)) : 'match time'}</td>
+        <td class="num">${r.taken}/${r.max_slots}
+          <br><span class="xs" style="color:var(--win)">${r.confirmed} ok</span></td>
+        <td class="num">${money(r.prize_pool)}
+          <br><span class="xs muted">${money(r.prize_1)}/${money(r.prize_2)}/${money(r.prize_3)}</span></td>
+        <td class="num">${r.entry_fee ? money(r.entry_fee) : 'Free'}</td>
+        <td class="xs">${r.room_id
+          ? `<span class="mono">${esc(r.room_id)}</span> / ${esc(r.room_pass || '')}`
+          : '<span class="muted">not set</span>'}</td>
+        <td>${pill(r.status)}</td>
+        <td><div class="row" style="gap:6px;flex-wrap:nowrap">
+          <button class="btn btn--xs" data-tp="${r.id}" data-title="${esc(r.title)}">Players</button>
+          <button class="btn btn--gold btn--xs" data-troom="${r.id}" data-title="${esc(r.title)}"
+                  data-rid="${esc(r.room_id || '')}" data-rpw="${esc(r.room_pass || '')}">Room</button>
+          <button class="btn btn--ghost btn--xs" data-tedit='${esc(JSON.stringify(r))}'>Edit</button>
+          <button class="btn btn--ghost btn--xs" data-tdel="${r.id}">Delete</button>
+        </div></td>
+      </tr>`).join('')}</tbody></table>`);
+  });
+
+  $$('[data-tp]').forEach((b) => b.addEventListener('click', () => tournPlayers(b.dataset)));
+  $$('[data-troom]').forEach((b) => b.addEventListener('click', () => tournRoom(b.dataset)));
+  $$('[data-tedit]').forEach((b) => b.addEventListener('click', () =>
+    tournForm(JSON.parse(b.dataset.tedit))));
+  $$('[data-tdel]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('Delete this tournament? Everyone who registered gets their entry fee back.')) return;
+    try {
+      const out = await busy(b, '…', () =>
+        rpcAuth('tuna_admin_tournament_delete', { p_id: Number(b.dataset.tdel) }));
+      toast(`Deleted. ${out.refunded} player(s) refunded.`, 'good');
+      loadTournaments();
+    } catch (e) { toast(e.message, 'bad'); }
+  }));
+}
+
+/* datetime-local wants "YYYY-MM-DDTHH:MM" in local time */
+const toLocal = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+const fromLocal = (v) => (v ? new Date(v).toISOString() : null);
+
+const MAPS = {
+  pubg: ['Erangel', 'Miramar', 'Sanhok', 'Livik', 'Vikendi', 'Karakin', 'Nusa'],
+  freefire: ['Bermuda', 'Purgatory', 'Kalahari', 'Alpine', 'Nexterra', 'Solara']
+};
+const MODES = {
+  pubg: ['Solo', 'Duo', 'Squad', 'TDM', 'Arena'],
+  freefire: ['Solo', 'Duo', 'Squad', 'Clash Squad', 'Lone Wolf']
+};
+
+function tournForm(t) {
+  tournBanner = null;
+  const g = t?.game || 'freefire';
+  openModal(`
+    <h2>${t ? 'Edit tournament' : 'Create tournament'}</h2>
+    <p class="sub">Players see this on their home screen the moment it is open.</p>
+    <div class="alert alert--bad" id="tfErr" hidden></div>
+
+    <label class="field"><span class="label">Title</span>
+      <input type="text" id="tfTitle" value="${esc(t?.title || '')}" placeholder="Tuna Weekly Cup #1"></label>
+
+    <div class="grid grid--2">
+      <label class="field"><span class="label">Game</span>
+        <select id="tfGame">
+          <option value="freefire" ${g === 'freefire' ? 'selected' : ''}>Free Fire</option>
+          <option value="pubg" ${g === 'pubg' ? 'selected' : ''}>PUBG Mobile</option>
+        </select></label>
+      <label class="field"><span class="label">Mode</span>
+        <select id="tfMode"></select></label>
+    </div>
+
+    <div class="grid grid--2">
+      <label class="field"><span class="label">Map</span>
+        <select id="tfMap"></select></label>
+      <label class="field"><span class="label">Total slots</span>
+        <input type="number" id="tfSlots" value="${t?.max_slots ?? 48}"></label>
+    </div>
+
+    <label class="field"><span class="label">Banner image</span>
+      <div class="filepick"><input type="file" id="tfFile" accept="image/jpeg,image/png,image/webp">
+        <span id="tfFileLabel">${t?.banner_url ? 'Replace banner (optional)' : 'Choose banner image'}</span></div>
+    </label>
+
+    <p class="eyebrow" style="margin:14px 0 8px">Dates</p>
+    <div class="grid grid--2">
+      <label class="field"><span class="label">Registration opens</span>
+        <input type="datetime-local" id="tfRegOpen" value="${toLocal(t?.reg_opens_at)}"></label>
+      <label class="field"><span class="label">Registration closes</span>
+        <input type="datetime-local" id="tfRegClose" value="${toLocal(t?.reg_closes_at)}"></label>
+    </div>
+    <div class="grid grid--2">
+      <label class="field"><span class="label">Match starts</span>
+        <input type="datetime-local" id="tfStart" value="${toLocal(t?.starts_at)}"></label>
+      <label class="field"><span class="label">Reveal room ID (minutes before)</span>
+        <input type="number" id="tfReveal" value="${t?.reveal_minutes ?? 30}"></label>
+    </div>
+
+    <p class="eyebrow" style="margin:14px 0 8px">Money</p>
+    <div class="grid grid--2">
+      <label class="field"><span class="label">Entry fee</span>
+        <input type="number" id="tfEntry" value="${t?.entry_fee ?? 0}"></label>
+      <label class="field"><span class="label">Total prize pool</span>
+        <input type="number" id="tfPool" value="${t?.prize_pool ?? 0}"></label>
+    </div>
+    <div class="grid grid--4">
+      <label class="field"><span class="label">1st prize</span>
+        <input type="number" id="tfP1" value="${t?.prize_1 ?? 0}"></label>
+      <label class="field"><span class="label">2nd prize</span>
+        <input type="number" id="tfP2" value="${t?.prize_2 ?? 0}"></label>
+      <label class="field"><span class="label">3rd prize</span>
+        <input type="number" id="tfP3" value="${t?.prize_3 ?? 0}"></label>
+      <label class="field"><span class="label">Per kill</span>
+        <input type="number" id="tfKill" value="${t?.per_kill ?? 0}"></label>
+    </div>
+
+    <label class="field"><span class="label">Rules (optional)</span>
+      <textarea id="tfRules" rows="3">${esc(t?.rules || '')}</textarea></label>
+
+    <label class="field"><span class="label">Status</span>
+      <select id="tfStatus">
+        ${['draft', 'open', 'closed', 'live', 'completed', 'cancelled'].map((s) =>
+          `<option value="${s}" ${(t?.status || 'open') === s ? 'selected' : ''}>${s}</option>`).join('')}
+      </select></label>
+
+    <div class="row" style="margin-top:16px">
+      <button class="btn grow" id="tfGo">${t ? 'Save changes' : 'Create tournament'}</button>
+      <button class="btn btn--ghost" id="tfCancel">Cancel</button>
+    </div>`);
+
+  const fillGameLists = () => {
+    const game = $('#tfGame').value;
+    $('#tfMode').innerHTML = MODES[game].map((m) =>
+      `<option ${t?.mode === m ? 'selected' : ''}>${m}</option>`).join('');
+    $('#tfMap').innerHTML = MAPS[game].map((m) =>
+      `<option ${t?.map === m ? 'selected' : ''}>${m}</option>`).join('');
+  };
+  fillGameLists();
+  $('#tfGame').addEventListener('change', fillGameLists);
+
+  $('#tfFile').addEventListener('change', () => {
+    const f = $('#tfFile').files[0];
+    $('#tfFileLabel').textContent = f ? `✓ ${f.name.slice(0, 24)}` : 'Choose banner image';
+  });
+
+  $('#tfCancel').addEventListener('click', closeModal);
+  $('#tfGo').addEventListener('click', async (e) => {
+    const err = $('#tfErr'); err.hidden = true;
+    try {
+      await busy(e.currentTarget, 'Saving…', async () => {
+        let banner = t?.banner_url || null;
+        const file = $('#tfFile').files[0];
+        if (file) banner = await upload(BUCKET_PUBLIC, file);
+
+        await rpcAuth('tuna_admin_tournament_save', {
+          p_id: t?.id ?? null,
+          p_title: $('#tfTitle').value,
+          p_game: $('#tfGame').value,
+          p_mode: $('#tfMode').value,
+          p_map: $('#tfMap').value,
+          p_banner_url: banner,
+          p_starts_at: fromLocal($('#tfStart').value),
+          p_reg_opens_at: fromLocal($('#tfRegOpen').value),
+          p_reg_closes_at: fromLocal($('#tfRegClose').value),
+          p_reveal_minutes: parseInt($('#tfReveal').value, 10) || 30,
+          p_entry_fee: parseInt($('#tfEntry').value, 10) || 0,
+          p_prize_pool: parseInt($('#tfPool').value, 10) || 0,
+          p_prize_1: parseInt($('#tfP1').value, 10) || 0,
+          p_prize_2: parseInt($('#tfP2').value, 10) || 0,
+          p_prize_3: parseInt($('#tfP3').value, 10) || 0,
+          p_per_kill: parseInt($('#tfKill').value, 10) || 0,
+          p_max_slots: parseInt($('#tfSlots').value, 10) || 48,
+          p_rules: $('#tfRules').value,
+          p_status: $('#tfStatus').value
+        });
+      });
+      closeModal();
+      toast(t ? 'Tournament updated.' : 'Tournament created.', 'good');
+      loadTournaments();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  });
+}
+
+/* ────────────────────────────── who registered, and confirming them ─────── */
+async function tournPlayers(d) {
+  openModal(`
+    <h2>Registered players</h2>
+    <p class="sub">${esc(d.title)}</p>
+    <div class="alert alert--bad" id="tpErr" hidden></div>
+    <div id="tpBody">${skeleton(50, 3)}</div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn btn--ghost" id="tpDone">Done</button>
+    </div>`);
+  $('#tpDone').addEventListener('click', () => { closeModal(); loadTournaments(); });
+
+  const paint = async () => {
+    let rows = [];
+    try { rows = await rpcAuth('tuna_admin_tournament_players', { p_id: Number(d.tp) }) || []; }
+    catch (e) { $('#tpBody').innerHTML = `<div class="alert alert--bad">${esc(e.message)}</div>`; return; }
+
+    $('#tpBody').innerHTML = rows.length ? `<div class="tablewrap"><table>
+      <thead><tr><th>#</th><th>Name</th><th>App ID (phone)</th><th>Game name</th>
+        <th>Game ID</th><th>Status</th><th></th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td class="num">${r.slot_no ?? '—'}</td>
+        <td><div class="row" style="gap:8px;flex-wrap:nowrap">${avatar(r)}<b>${esc(r.name)}</b></div></td>
+        <td class="num">${esc(r.phone)}</td>
+        <td><b>${esc(r.ingame_name)}</b></td>
+        <td class="num" style="color:var(--marigold)">${esc(r.ingame_uid)}</td>
+        <td>${pill(r.status)}</td>
+        <td>${r.status === 'pending' ? `<div class="row" style="gap:6px;flex-wrap:nowrap">
+            <button class="btn btn--win btn--xs" data-ok="${r.id}">Confirm</button>
+            <button class="btn btn--ghost btn--xs" data-no="${r.id}">Reject</button></div>`
+          : '<span class="xs muted">done</span>'}</td>
+      </tr>`).join('')}</tbody></table></div>`
+      : empty('Nobody yet', 'Registrations appear here as they come in.');
+
+    $$('#tpBody [data-ok]').forEach((b) => b.addEventListener('click', async () => {
+      try {
+        await busy(b, '…', () => rpcAuth('tuna_admin_tournament_review',
+          { p_reg: Number(b.dataset.ok), p_action: 'confirm' }));
+        toast('Slot confirmed. Player notified.', 'good');
+        paint();
+      } catch (e) { toast(e.message, 'bad'); }
+    }));
+    $$('#tpBody [data-no]').forEach((b) => b.addEventListener('click', async () => {
+      try {
+        await busy(b, '…', () => rpcAuth('tuna_admin_tournament_review',
+          { p_reg: Number(b.dataset.no), p_action: 'reject', p_note: 'Registration rejected' }));
+        toast('Rejected. Entry fee returned.');
+        paint();
+      } catch (e) { toast(e.message, 'bad'); }
+    }));
+  };
+  await paint();
+}
+
+/* ───────────────────────────────────── publishing the room details ──────── */
+function tournRoom(d) {
+  openModal(`
+    <h2>Room details</h2>
+    <p class="sub">${esc(d.title)}</p>
+    <div class="alert alert--bad" id="trErr" hidden></div>
+    <div class="alert alert--info">
+      Only confirmed players see these, and only inside the reveal window you
+      set. Everyone confirmed gets a notification as soon as you save.
+    </div>
+    <div class="grid grid--2">
+      <label class="field"><span class="label">Room ID</span>
+        <input type="text" id="trRid" class="mono" value="${esc(d.rid || '')}" placeholder="e.g. 55667788"></label>
+      <label class="field"><span class="label">Room password</span>
+        <input type="text" id="trRpw" class="mono" value="${esc(d.rpw || '')}" placeholder="e.g. tuna99"></label>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn grow" id="trGo">Save and notify</button>
+      <button class="btn btn--ghost" id="trCancel">Cancel</button>
+    </div>`);
+  $('#trCancel').addEventListener('click', closeModal);
+  $('#trGo').addEventListener('click', async (e) => {
+    const err = $('#trErr'); err.hidden = true;
+    try {
+      const out = await busy(e.currentTarget, 'Saving…', () =>
+        rpcAuth('tuna_admin_tournament_room', {
+          p_id: Number(d.troom), p_room_id: $('#trRid').value, p_room_pass: $('#trRpw').value
+        }));
+      closeModal();
+      toast(`Saved. ${out.notified} confirmed player(s) notified.`, 'good');
+      loadTournaments();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  });
+}

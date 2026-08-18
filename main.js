@@ -6,7 +6,7 @@ import { showDashboard, redrawCharts } from './dashboard.js';
 import {
   showPlayers, showDeposits, showWithdrawals, showStore, showMatches,
   showRooms, showQr, showAds, showPacks, showNotify, showReports,
-  showFeedback, showSettings, showFines
+  showFeedback, showSettings, showFines, showTournaments
 } from './views.js';
 
 applyTheme(savedTheme());
@@ -18,6 +18,7 @@ const VIEWS = {
   withdrawals: showWithdrawals,
   store:       showStore,
   qr:          showQr,
+  tournaments: showTournaments,
   matches:     showMatches,
   rooms:       showRooms,
   ads:         showAds,

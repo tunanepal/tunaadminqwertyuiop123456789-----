@@ -62,6 +62,7 @@
 
     <div class="navgroup">
       <p class="eyebrow">Play</p>
+      <button class="navb" data-view="tournaments">Tournaments<span class="count" hidden>0</span></button>
       <button class="navb" data-view="matches">Matches<span class="count" hidden>0</span></button>
       <button class="navb" data-view="rooms">Live rooms</button>
       <button class="navb" data-view="fines">Fines<span class="count" hidden>0</span></button>
@@ -130,6 +131,11 @@
     <section class="view" id="view-qr">
       <div class="head"><div><h1>QR codes</h1><p>Upload eSewa and Khalti QR with a wallet limit.</p></div></div>
       <div id="qrBody"></div>
+    </section>
+
+    <section class="view" id="view-tournaments">
+      <div class="head"><div><h1>Tournaments</h1><p>Run live events, approve players, publish room details.</p></div></div>
+      <div id="tournamentsBody"></div>
     </section>
 
     <section class="view" id="view-matches">
