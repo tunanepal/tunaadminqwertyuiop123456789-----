@@ -327,3 +327,62 @@ textarea { min-height: 76px; resize: vertical; }
   .grid--4 { grid-template-columns: repeat(2, 1fr); }
   .grid--3, .grid--2 { grid-template-columns: 1fr; }
 }
+
+/* ═══════════════════════════════════════════════ view components ═══════ */
+
+.filterbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.filterbar button {
+  padding: 7px 15px; border-radius: 20px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink-3);
+  font-family: var(--display); font-size: 14px; font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase; cursor: pointer;
+  transition: all .13s;
+}
+.filterbar button:hover { color: var(--ink); border-color: var(--ink-3); }
+.filterbar button[aria-pressed="true"] { background: var(--crimson); border-color: var(--crimson); color: #fff; }
+
+/* proof screenshots: small in the table, full size in a new tab */
+.proofthumb { display: block; width: 46px; height: 46px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+.proofthumb img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .18s; }
+.proofthumb:hover img { transform: scale(1.12); }
+
+.adthumb { width: 130px; aspect-ratio: 16/7; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); display: block; }
+
+tr.rowdim td { opacity: .55; }
+
+.btn--xs { padding: 4px 9px; font-size: 12px; letter-spacing: .04em; }
+
+/* winner picker in the settle dialog */
+.pickwin { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pickwin button {
+  padding: 16px 12px; text-align: center; cursor: pointer;
+  border: 1.5px solid var(--line); border-radius: var(--r);
+  background: var(--panel-2); color: var(--ink-2);
+  transition: all .14s;
+}
+.pickwin button:hover { border-color: var(--win); background: var(--win-sk); }
+.pickwin b { display: block; font-family: var(--display); font-size: 18px; color: var(--ink); }
+.pickwin small { color: var(--ink-3); font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; }
+
+/* support chat inside the admin modal */
+.chatbox {
+  max-height: 300px; overflow-y: auto; padding: 10px;
+  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--sunk);
+}
+.bubble { max-width: 82%; margin-bottom: 9px; padding: 9px 12px; border-radius: 14px; font-size: 13.5px; }
+.bubble p { margin: 0; }
+.bubble time { display: block; margin-top: 3px; font-size: 10px; opacity: .6; }
+.bubble img, .bubble video { width: 100%; border-radius: 8px; margin-top: 6px; display: block; }
+.bubble--admin  { margin-left: auto; background: var(--crimson); color: #fff; border-bottom-right-radius: 4px; }
+.bubble--player { margin-right: auto; background: var(--panel-2); color: var(--ink-2); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+
+/* file picker */
+.filepick {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  min-height: 70px; padding: 12px;
+  border: 1.5px dashed var(--line); border-radius: var(--r-sm);
+  background: var(--panel-2); color: var(--ink-3); font-size: 13px;
+  text-align: center; cursor: pointer; transition: all .15s;
+}
+.filepick:hover { border-color: var(--indigo); color: var(--indigo); }
+.filepick input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }

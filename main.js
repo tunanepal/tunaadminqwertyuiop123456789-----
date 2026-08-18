@@ -3,11 +3,29 @@
 import { rpc, rpcAuth, getToken, setToken, clearToken } from './api.js';
 import { $, $$, toast, busy, applyTheme, savedTheme, openModal, closeModal, esc } from './ui.js';
 import { showDashboard, redrawCharts } from './dashboard.js';
+import {
+  showPlayers, showDeposits, showWithdrawals, showStore, showMatches,
+  showRooms, showQr, showAds, showPacks, showNotify, showReports,
+  showFeedback, showSettings
+} from './views.js';
 
 applyTheme(savedTheme());
 
 const VIEWS = {
-  dashboard: showDashboard
+  dashboard:   showDashboard,
+  players:     showPlayers,
+  deposits:    showDeposits,
+  withdrawals: showWithdrawals,
+  store:       showStore,
+  qr:          showQr,
+  matches:     showMatches,
+  rooms:       showRooms,
+  ads:         showAds,
+  packs:       showPacks,
+  notify:      showNotify,
+  reports:     showReports,
+  feedback:    showFeedback,
+  settings:    showSettings
 };
 
 let current = null;

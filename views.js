@@ -1,0 +1,873 @@
+/* Tunanepal admin — every working view.
+   One pattern throughout: fetch → render a table → wire the row actions. */
+
+import { rpcAuth, upload, BUCKET_PUBLIC } from './api.js';
+import {
+  $, $$, esc, money, num, when, ago, avatar, toast, busy,
+  openModal, closeModal, empty, skeleton
+} from './ui.js';
+
+const box = (id) => $(`#${id}`);
+const wrap = (html) => `<div class="card"><div class="tablewrap">${html}</div></div>`;
+const pill = (s) => {
+  const m = { pending: 'pill--wait', approved: 'pill--win', delivered: 'pill--win',
+              rejected: 'pill--bad', paid: 'pill--win', unpaid: 'pill--wait',
+              settled: 'pill--win', disputed: 'pill--bad', claimed: 'pill--wait',
+              playing: 'pill--info', open: 'pill--info', matched: 'pill--wait',
+              expired: '', cancelled: '', void: '', closed: '' };
+  return `<span class="pill ${m[s] ?? ''}">${esc(s)}</span>`;
+};
+const money0 = (n) => `<span class="mono">${money(n)}</span>`;
+
+/* Screenshots open full size rather than squinting at a thumbnail. */
+const proof = (url) => url
+  ? `<a href="${esc(url)}" target="_blank" rel="noopener" class="proofthumb">
+       <img src="${esc(url)}" alt="proof" loading="lazy"></a>`
+  : '<span class="muted xs">none</span>';
+
+async function load(id, fn, render) {
+  box(id).innerHTML = skeleton(120);
+  try {
+    const data = await fn();
+    box(id).innerHTML = render(data);
+    return data;
+  } catch (e) {
+    box(id).innerHTML = `<div class="alert alert--bad">${esc(e.message)}</div>`;
+    if (e.expired) throw e;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════ PLAYERS ══ */
+let playerQuery = '';
+
+export async function showPlayers() {
+  if (!$('#pSearch')) {
+    box('playersBody').innerHTML = `
+      <div class="card" style="margin-bottom:14px">
+        <input type="search" id="pSearch" placeholder="Search by name or phone number…">
+      </div>
+      <div id="playersTable"></div>`;
+    $('#pSearch').addEventListener('input', debounce(() => {
+      playerQuery = $('#pSearch').value;
+      loadPlayers();
+    }, 300));
+  }
+  await loadPlayers();
+}
+
+async function loadPlayers() {
+  await load('playersTable', () => rpcAuth('tuna_admin_players', { p_q: playerQuery }), (rows) => {
+    if (!rows.length) return empty('No players', 'Nobody matches that search.');
+    return wrap(`<table>
+      <thead><tr>
+        <th>Player</th><th>Phone (ID)</th><th>Points</th><th>Matches</th>
+        <th>Wins</th><th>Deposited</th><th>Withdrawn</th><th>Joined</th><th>Actions</th>
+      </tr></thead><tbody>
+      ${rows.map((r) => `<tr${r.blocked ? ' class="rowdim"' : ''}>
+        <td><div class="row" style="gap:8px;flex-wrap:nowrap">${avatar(r)}
+          <span class="truncate"><b>${esc(r.name)}</b>
+          ${r.blocked ? '<span class="pill pill--bad">Blocked</span>' : ''}</span></div></td>
+        <td class="num">${esc(r.phone)}</td>
+        <td class="num" style="color:var(--marigold)">${money(r.points)}</td>
+        <td class="num">${r.matches}</td>
+        <td class="num">${r.wins}</td>
+        <td class="num">${money(r.deposited)}</td>
+        <td class="num">${money(r.withdrawn)}</td>
+        <td class="xs muted">${esc(when(r.created_at))}</td>
+        <td><div class="row" style="gap:6px;flex-wrap:nowrap">
+          <button class="btn btn--gold btn--xs" data-pts="${r.id}" data-name="${esc(r.name)}"
+                  data-bal="${r.points}">Points</button>
+          <button class="btn ${r.blocked ? 'btn--win' : 'btn--ghost'} btn--xs"
+                  data-block="${r.id}" data-on="${r.blocked ? 1 : 0}">
+            ${r.blocked ? 'Unblock' : 'Block'}</button>
+        </div></td>
+      </tr>`).join('')}
+      </tbody></table>`);
+  });
+
+  $$('[data-pts]').forEach((b) => b.addEventListener('click', () => pointsModal(b.dataset)));
+  $$('[data-block]').forEach((b) => b.addEventListener('click', async () => {
+    const on = b.dataset.on === '1';
+    try {
+      await busy(b, '…', () => rpcAuth('tuna_admin_block', { p_player: b.dataset.block, p_blocked: !on }));
+      toast(on ? 'Player unblocked.' : 'Player blocked and signed out.', on ? 'good' : '');
+      loadPlayers();
+    } catch (e) { toast(e.message, 'bad'); }
+  }));
+}
+
+function pointsModal(d) {
+  openModal(`
+    <h2>Adjust points</h2>
+    <p class="sub">${esc(d.name)} · currently ${money(d.bal)}</p>
+    <div class="alert alert--bad" id="ptErr" hidden></div>
+    <label class="field"><span class="label">Amount — positive to add, negative to remove</span>
+      <input type="number" id="ptAmt" placeholder="e.g. 500 or -200"></label>
+    <label class="field"><span class="label">Reason (the player sees this)</span>
+      <input type="text" id="ptNote" placeholder="e.g. Bonus, or correction for deposit #12"></label>
+    <div class="row" style="margin-top:16px">
+      <button class="btn grow" id="ptGo">Apply</button>
+      <button class="btn btn--ghost" id="ptCancel">Cancel</button>
+    </div>`);
+  $('#ptCancel').addEventListener('click', closeModal);
+  $('#ptGo').addEventListener('click', async (e) => {
+    const err = $('#ptErr'); err.hidden = true;
+    try {
+      await busy(e.currentTarget, 'Applying…', () => rpcAuth('tuna_admin_adjust_points', {
+        p_player: d.pts, p_amount: parseInt($('#ptAmt').value, 10), p_note: $('#ptNote').value
+      }));
+      closeModal(); toast('Points updated.', 'good'); loadPlayers();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════ DEPOSITS ══ */
+let depFilter = 'pending';
+
+export async function showDeposits() {
+  if (!$('#depTabs')) {
+    box('depositsBody').innerHTML =
+      `${filterBar('depTabs', ['pending', 'approved', 'rejected', 'all'], depFilter)}
+       <div id="depTable"></div>`;
+    $('#depTabs').addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-f]'); if (!b) return;
+      depFilter = b.dataset.f; syncBar('depTabs', depFilter); loadDeposits();
+    });
+  }
+  await loadDeposits();
+}
+
+async function loadDeposits() {
+  await load('depTable', () => rpcAuth('tuna_admin_deposits', { p_status: depFilter }), (rows) => {
+    if (!rows.length) return empty('Nothing here', `No ${depFilter} deposits.`);
+    return wrap(`<table>
+      <thead><tr><th>Player</th><th>Phone (ID)</th><th>Amount</th><th>Wallet</th>
+        <th>Paid from</th><th>Proof</th><th>When</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td><div class="row" style="gap:8px;flex-wrap:nowrap">${avatar(r)}<b>${esc(r.name)}</b></div></td>
+        <td class="num">${esc(r.phone)}</td>
+        <td class="num" style="color:var(--marigold)">${money(r.amount)}</td>
+        <td>${esc(r.method)}</td>
+        <td class="xs"><b>${esc(r.sender_name)}</b><br><span class="mono">${esc(r.sender_phone)}</span></td>
+        <td>${proof(r.screenshot_url)}</td>
+        <td class="xs muted">${esc(ago(r.created_at))}</td>
+        <td>${pill(r.status)}${r.admin_note ? `<br><span class="xs muted">${esc(r.admin_note)}</span>` : ''}</td>
+        <td>${r.status === 'pending' ? `<div class="row" style="gap:6px;flex-wrap:nowrap">
+          <button class="btn btn--win btn--xs" data-dep-ok="${r.id}" data-amt="${r.amount}"
+                  data-name="${esc(r.name)}">Approve</button>
+          <button class="btn btn--ghost btn--xs" data-dep-no="${r.id}">Reject</button></div>`
+          : '<span class="xs muted">done</span>'}</td>
+      </tr>`).join('')}</tbody></table>`);
+  });
+
+  $$('[data-dep-ok]').forEach((b) => b.addEventListener('click', () => approveDeposit(b.dataset)));
+  $$('[data-dep-no]').forEach((b) => b.addEventListener('click', () =>
+    rejectModal('Reject deposit', (note) =>
+      rpcAuth('tuna_admin_review_deposit', { p_id: Number(b.dataset.depNo), p_action: 'reject', p_note: note })
+        .then(() => { toast('Deposit rejected.'); loadDeposits(); }))));
+}
+
+function approveDeposit(d) {
+  openModal(`
+    <h2>Approve deposit</h2>
+    <p class="sub">${esc(d.name)} — check the screenshot matches this amount.</p>
+    <div class="alert alert--bad" id="daErr" hidden></div>
+    <label class="field"><span class="label">Points to credit</span>
+      <input type="number" id="daAmt" value="${d.amt}">
+      <span class="label" style="margin-top:4px;color:var(--ink-3)">
+        Change this if they typed the wrong amount.</span></label>
+    <label class="field"><span class="label">Note (optional)</span>
+      <input type="text" id="daNote" placeholder="Visible to the player"></label>
+    <div class="row" style="margin-top:16px">
+      <button class="btn btn--win grow" id="daGo">Approve and credit</button>
+      <button class="btn btn--ghost" id="daCancel">Cancel</button>
+    </div>`);
+  $('#daCancel').addEventListener('click', closeModal);
+  $('#daGo').addEventListener('click', async (e) => {
+    const err = $('#daErr'); err.hidden = true;
+    try {
+      await busy(e.currentTarget, 'Crediting…', () => rpcAuth('tuna_admin_review_deposit', {
+        p_id: Number(d.depOk), p_action: 'approve',
+        p_amount: parseInt($('#daAmt').value, 10), p_note: $('#daNote').value
+      }));
+      closeModal(); toast('Approved. Points credited.', 'good'); loadDeposits();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════ WITHDRAWALS ══ */
+let wdFilter = 'pending';
+
+export async function showWithdrawals() {
+  if (!$('#wdTabs')) {
+    box('withdrawalsBody').innerHTML = `
+      <div class="alert alert--info" style="margin-bottom:14px">
+        Points are held when the player requests. Approving confirms the payout;
+        rejecting returns them in full. Use <b>Mark paid</b> once you have actually sent the money.
+      </div>
+      ${filterBar('wdTabs', ['pending', 'approved', 'rejected', 'all'], wdFilter)}
+      <div id="wdTable"></div>`;
+    $('#wdTabs').addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-f]'); if (!b) return;
+      wdFilter = b.dataset.f; syncBar('wdTabs', wdFilter); loadWithdrawals();
+    });
+  }
+  await loadWithdrawals();
+}
+
+async function loadWithdrawals() {
+  await load('wdTable', () => rpcAuth('tuna_admin_withdrawals', { p_status: wdFilter, p_payout: 'all' }), (rows) => {
+    if (!rows.length) return empty('Nothing here', `No ${wdFilter} withdrawals.`);
+    return wrap(`<table>
+      <thead><tr><th>Player</th><th>Phone (ID)</th><th>Amount</th><th>Send to</th>
+        <th>When</th><th>Status</th><th>Payout</th><th>Actions</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td><div class="row" style="gap:8px;flex-wrap:nowrap">${avatar(r)}<b>${esc(r.name)}</b></div></td>
+        <td class="num">${esc(r.phone)}</td>
+        <td class="num" style="color:var(--crimson)">${money(r.amount)}</td>
+        <td class="xs"><b>${esc(r.wallet_type)}</b><br><span class="mono">${esc(r.wallet_no)}</span>
+            <br>${esc(r.wallet_name)}</td>
+        <td class="xs muted">${esc(ago(r.created_at))}</td>
+        <td>${pill(r.status)}${r.admin_note ? `<br><span class="xs muted">${esc(r.admin_note)}</span>` : ''}</td>
+        <td>${r.status === 'approved' ? pill(r.payout) : '<span class="xs muted">—</span>'}</td>
+        <td><div class="row" style="gap:6px;flex-wrap:nowrap">
+          ${r.status === 'pending' ? `
+            <button class="btn btn--win btn--xs" data-wd-ok="${r.id}">Approve</button>
+            <button class="btn btn--ghost btn--xs" data-wd-no="${r.id}">Reject</button>` : ''}
+          ${r.status === 'approved' ? `
+            <button class="btn ${r.payout === 'paid' ? 'btn--ghost' : 'btn--gold'} btn--xs"
+                    data-wd-paid="${r.id}" data-on="${r.payout === 'paid' ? 1 : 0}">
+              ${r.payout === 'paid' ? 'Mark unpaid' : 'Mark paid'}</button>` : ''}
+        </div></td>
+      </tr>`).join('')}</tbody></table>`);
+  });
+
+  $$('[data-wd-ok]').forEach((b) => b.addEventListener('click', async () => {
+    try {
+      await busy(b, '…', () => rpcAuth('tuna_admin_review_withdrawal',
+        { p_id: Number(b.dataset.wdOk), p_action: 'approve' }));
+      toast('Approved. Now send the money and mark it paid.', 'good'); loadWithdrawals();
+    } catch (e) { toast(e.message, 'bad'); }
+  }));
+
+  $$('[data-wd-no]').forEach((b) => b.addEventListener('click', () =>
+    rejectModal('Reject withdrawal', (note) =>
+      rpcAuth('tuna_admin_review_withdrawal', { p_id: Number(b.dataset.wdNo), p_action: 'reject', p_note: note })
+        .then(() => { toast('Rejected. Points returned in full.'); loadWithdrawals(); }))));
+
+  $$('[data-wd-paid]').forEach((b) => b.addEventListener('click', async () => {
+    try {
+      await busy(b, '…', () => rpcAuth('tuna_admin_mark_paid',
+        { p_id: Number(b.dataset.wdPaid), p_paid: b.dataset.on !== '1' }));
+      toast('Payout status updated.', 'good'); loadWithdrawals();
+    } catch (e) { toast(e.message, 'bad'); }
+  }));
+}
+
+/* ═════════════════════════════════════════════════════════════════ STORE ══ */
+let stFilter = 'pending';
+
+export async function showStore() {
+  if (!$('#stTabs')) {
+    box('storeBody').innerHTML =
+      `${filterBar('stTabs', ['pending', 'delivered', 'rejected', 'all'], stFilter)}
+       <div id="stTable"></div>`;
+    $('#stTabs').addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-f]'); if (!b) return;
+      stFilter = b.dataset.f; syncBar('stTabs', stFilter); loadStore();
+    });
+  }
+  await loadStore();
+}
+
+async function loadStore() {
+  await load('stTable', () => rpcAuth('tuna_admin_purchases', { p_status: stFilter }), (rows) => {
+    if (!rows.length) return empty('Nothing here', `No ${stFilter} UC orders.`);
+    return wrap(`<table>
+      <thead><tr><th>Player</th><th>Phone (ID)</th><th>Pack</th><th>Price</th>
+        <th>PUBG ID</th><th>Paid from</th><th>Proof</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td><div class="row" style="gap:8px;flex-wrap:nowrap">${avatar(r)}<b>${esc(r.name)}</b></div></td>
+        <td class="num">${esc(r.phone)}</td>
+        <td><b>${esc(r.pack_title)}</b><br><span class="xs muted">${r.uc_amount} UC</span></td>
+        <td class="num">${money(r.price)}</td>
+        <td class="num" style="color:var(--marigold)">${esc(r.pubg_id)}</td>
+        <td class="xs"><span class="mono">${esc(r.wallet_no)}</span><br>${esc(r.wallet_name)}</td>
+        <td>${proof(r.screenshot_url)}</td>
+        <td>${pill(r.status)}${r.admin_note ? `<br><span class="xs muted">${esc(r.admin_note)}</span>` : ''}</td>
+        <td>${r.status === 'pending' ? `<div class="row" style="gap:6px;flex-wrap:nowrap">
+          <button class="btn btn--win btn--xs" data-st-ok="${r.id}">Delivered</button>
+          <button class="btn btn--ghost btn--xs" data-st-no="${r.id}">Reject</button></div>`
+          : '<span class="xs muted">done</span>'}</td>
+      </tr>`).join('')}</tbody></table>`);
+  });
+
+  $$('[data-st-ok]').forEach((b) => b.addEventListener('click', async () => {
+    try {
+      await busy(b, '…', () => rpcAuth('tuna_admin_review_purchase',
+        { p_id: Number(b.dataset.stOk), p_action: 'deliver' }));
+      toast('Marked delivered. The player has been notified.', 'good'); loadStore();
+    } catch (e) { toast(e.message, 'bad'); }
+  }));
+  $$('[data-st-no]').forEach((b) => b.addEventListener('click', () =>
+    rejectModal('Reject UC order', (note) =>
+      rpcAuth('tuna_admin_review_purchase', { p_id: Number(b.dataset.stNo), p_action: 'reject', p_note: note })
+        .then(() => { toast('Order rejected.'); loadStore(); }))));
+}
+
+/* ═══════════════════════════════════════════════════════════════ MATCHES ══ */
+let mFilter = 'claimed';
+
+export async function showMatches() {
+  if (!$('#mTabs')) {
+    box('matchesBody').innerHTML = `
+      <div class="alert alert--info" style="margin-bottom:14px">
+        Check the proof screenshot, then release the payout to the real winner.
+        <b>Void</b> returns both stakes and takes no commission.
+      </div>
+      ${filterBar('mTabs', ['claimed', 'disputed', 'playing', 'settled', 'all'], mFilter)}
+      <div id="mTable"></div>`;
+    $('#mTabs').addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-f]'); if (!b) return;
+      mFilter = b.dataset.f; syncBar('mTabs', mFilter); loadMatches();
+    });
+  }
+  await loadMatches();
+}
+
+async function loadMatches() {
+  await load('mTable', () => rpcAuth('tuna_admin_matches', { p_status: mFilter }), (rows) => {
+    if (!rows.length) return empty('Nothing here', `No ${mFilter} matches.`);
+    return wrap(`<table>
+      <thead><tr><th>#</th><th>Game</th><th>Host</th><th>Opponent</th><th>Stake</th>
+        <th>Pot</th><th>Payout</th><th>Claimed by</th><th>Proof</th><th>Status</th><th>Settle</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td class="num">${r.id}</td>
+        <td><b>${esc(r.game === 'pubg' ? 'PUBG' : 'Free Fire')}</b>
+            <br><span class="xs muted">${esc(r.team_size.toUpperCase())}</span></td>
+        <td><b>${esc(r.host_name)}</b><br><span class="xs muted mono">${esc(r.host_phone)}</span></td>
+        <td><b>${esc(r.opp_name)}</b><br><span class="xs muted mono">${esc(r.opp_phone)}</span></td>
+        <td class="num">${money(r.stake)}</td>
+        <td class="num">${money(r.pot)}</td>
+        <td class="num" style="color:var(--win)">${money(r.payout)}</td>
+        <td>${r.claimed_name ? `<b>${esc(r.claimed_name)}</b>` : '<span class="xs muted">nobody</span>'}</td>
+        <td>${proof(r.proof_url)}</td>
+        <td>${pill(r.status)}</td>
+        <td>${r.status === 'settled' || r.status === 'void' ? '<span class="xs muted">done</span>'
+          : `<button class="btn btn--win btn--xs" data-settle="${r.id}"
+               data-host="${r.host_id}" data-opp="${r.opponent_id}"
+               data-hn="${esc(r.host_name)}" data-on2="${esc(r.opp_name)}"
+               data-pay="${r.payout}">Settle</button>`}</td>
+      </tr>`).join('')}</tbody></table>`);
+  });
+
+  $$('[data-settle]').forEach((b) => b.addEventListener('click', () => settleModal(b.dataset)));
+}
+
+function settleModal(d) {
+  openModal(`
+    <h2>Settle match #${esc(d.settle)}</h2>
+    <p class="sub">The winner receives ${money(d.pay)} immediately.</p>
+    <div class="alert alert--bad" id="seErr" hidden></div>
+    <div class="pickwin">
+      <button data-w="${d.host}"><b>${esc(d.hn)}</b><small>Host</small></button>
+      <button data-w="${d.opp}"><b>${esc(d.on2)}</b><small>Opponent</small></button>
+    </div>
+    <label class="field" style="margin-top:14px"><span class="label">Note (optional)</span>
+      <input type="text" id="seNote" placeholder="Both players see this"></label>
+    <div class="row" style="margin-top:12px">
+      <button class="btn btn--ghost grow" id="seVoid">Void — return both stakes</button>
+      <button class="btn btn--ghost" id="seCancel">Cancel</button>
+    </div>`);
+
+  $('#seCancel').addEventListener('click', closeModal);
+  $$('.pickwin button').forEach((b) => b.addEventListener('click', () =>
+    doSettle(b, d.settle, b.dataset.w)));
+  $('#seVoid').addEventListener('click', (e) => doSettle(e.currentTarget, d.settle, null));
+}
+
+async function doSettle(btn, id, winner) {
+  const err = $('#seErr'); err.hidden = true;
+  try {
+    await busy(btn, 'Settling…', () => rpcAuth('tuna_admin_settle_match', {
+      p_id: Number(id), p_winner: winner, p_note: $('#seNote').value
+    }));
+    closeModal();
+    toast(winner ? 'Payout released.' : 'Match voided, stakes returned.', 'good');
+    loadMatches();
+  } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+}
+
+/* ═════════════════════════════════════════════════════════════════ ROOMS ══ */
+export async function showRooms() {
+  await load('roomsBody', () => rpcAuth('tuna_admin_rooms'), (rows) => {
+    if (!rows.length) return empty('No rooms', 'Nothing has been posted yet.');
+    return wrap(`<table>
+      <thead><tr><th>#</th><th>Host</th><th>Game</th><th>Rules</th><th>Stake</th>
+        <th>Room</th><th>Opponent</th><th>Status</th><th>Posted</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td class="num">${r.id}</td>
+        <td><b>${esc(r.host_name)}</b><br><span class="xs muted mono">${esc(r.host_phone)}</span></td>
+        <td><b>${esc(r.game === 'pubg' ? 'PUBG' : 'Free Fire')}</b>
+            <br><span class="xs muted">${esc(r.team_size.toUpperCase())}</span></td>
+        <td class="xs">${ruleSummary(r)}</td>
+        <td class="num">${money(r.amount)}</td>
+        <td class="xs"><span class="mono">${esc(r.room_code)}</span> / ${esc(r.room_pass)}
+            <br><span class="muted">${esc(r.game_name)}</span></td>
+        <td>${r.opp_name ? esc(r.opp_name) : '<span class="xs muted">—</span>'}</td>
+        <td>${pill(r.status)}</td>
+        <td class="xs muted">${esc(ago(r.created_at))}</td>
+      </tr>`).join('')}</tbody></table>`);
+  });
+}
+
+function ruleSummary(r) {
+  if (r.game === 'pubg') return esc(r.gun_type || '—');
+  const on = [];
+  if (r.headshot) on.push('headshot');
+  if (r.limited_ammo) on.push('ltd ammo');
+  if (r.throwables) on.push('throwables');
+  if (r.gun_attr) on.push('gun attr');
+  if (r.char_skill) on.push('char skill');
+  return on.length ? esc(on.join(', ')) : '<span class="muted">all off</span>';
+}
+
+/* ═══════════════════════════════════════════════════════════════ QR CODES ══ */
+export async function showQr() {
+  box('qrBody').innerHTML = `
+    <div class="grid grid--2" style="margin-bottom:14px">
+      ${qrForm('esewa', 'eSewa')}
+      ${qrForm('khalti', 'Khalti')}
+    </div>
+    <div id="qrList"></div>`;
+
+  ['esewa', 'khalti'].forEach((m) => {
+    $(`#qrFile_${m}`).addEventListener('change', () => {
+      const f = $(`#qrFile_${m}`).files[0];
+      $(`#qrLabel_${m}`).textContent = f ? `✓ ${f.name.slice(0, 22)}` : 'Choose QR image';
+    });
+    $(`#qrGo_${m}`).addEventListener('click', (e) => addQr(e.currentTarget, m));
+  });
+  await loadQrList();
+}
+
+const qrForm = (key, label) => `
+  <div class="card">
+    <div class="card__head"><h3>${label} QR</h3></div>
+    <div class="alert alert--bad" id="qrErr_${key}" hidden></div>
+    <label class="field"><span class="label">QR image</span>
+      <div class="filepick"><input type="file" id="qrFile_${key}"
+        accept="image/jpeg,image/png,image/webp"><span id="qrLabel_${key}">Choose QR image</span></div>
+    </label>
+    <div class="grid grid--2">
+      <label class="field"><span class="label">Wallet number</span>
+        <input type="text" id="qrNo_${key}" placeholder="98XXXXXXXX"></label>
+      <label class="field"><span class="label">Account name</span>
+        <input type="text" id="qrName_${key}" placeholder="Name on wallet"></label>
+    </div>
+    <label class="field"><span class="label">Wallet limit (0 = no limit)</span>
+      <input type="number" id="qrCap_${key}" value="0" placeholder="e.g. 50000">
+      <span class="label" style="margin-top:4px;color:var(--ink-3)">
+        Retires itself once approved deposits reach this.</span></label>
+    <button class="btn btn--wide" id="qrGo_${key}">Upload and make live</button>
+    <p class="xs muted" style="margin-top:8px">Uploading retires the current ${label} QR.</p>
+  </div>`;
+
+async function addQr(btn, method) {
+  const err = $(`#qrErr_${method}`); err.hidden = true;
+  const file = $(`#qrFile_${method}`).files[0];
+  if (!file) { err.textContent = 'Choose the QR image first.'; err.hidden = false; return; }
+  try {
+    await busy(btn, 'Uploading…', async () => {
+      const url = await upload(BUCKET_PUBLIC, file);
+      await rpcAuth('tuna_admin_qr_add', {
+        p_method: method, p_image_url: url,
+        p_wallet_no: $(`#qrNo_${method}`).value,
+        p_wallet_name: $(`#qrName_${method}`).value,
+        p_capacity: parseInt($(`#qrCap_${method}`).value, 10) || 0
+      });
+    });
+    toast('QR is live. Players see it now.', 'good');
+    showQr();
+  } catch (e) { err.textContent = e.message; err.hidden = false; }
+}
+
+async function loadQrList() {
+  await load('qrList', () => rpcAuth('tuna_admin_qrs'), (rows) => {
+    if (!rows.length) return empty('No QR codes yet', 'Upload one above so players can deposit.');
+    return wrap(`<table>
+      <thead><tr><th>QR</th><th>Wallet</th><th>Account</th><th>Received</th>
+        <th>Limit</th><th>State</th><th>Added</th><th></th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td>${proof(r.image_url)}</td>
+        <td><b>${esc(r.method)}</b><br><span class="xs muted mono">${esc(r.wallet_no || '—')}</span></td>
+        <td class="xs">${esc(r.wallet_name || '—')}</td>
+        <td class="num">${money(r.received)}</td>
+        <td class="num">${r.capacity ? money(r.capacity) : '<span class="muted">none</span>'}</td>
+        <td>${r.active ? (r.full ? '<span class="pill pill--bad">Full</span>'
+                                 : '<span class="pill pill--win">Live</span>')
+                       : '<span class="pill">Retired</span>'}</td>
+        <td class="xs muted">${esc(when(r.created_at))}</td>
+        <td>${r.active ? `<button class="btn btn--ghost btn--xs" data-qr-off="${r.id}">Retire</button>` : ''}</td>
+      </tr>`).join('')}</tbody></table>`);
+  });
+  $$('[data-qr-off]').forEach((b) => b.addEventListener('click', async () => {
+    try {
+      await busy(b, '…', () => rpcAuth('tuna_admin_qr_retire', { p_id: Number(b.dataset.qrOff) }));
+      toast('QR retired.'); loadQrList();
+    } catch (e) { toast(e.message, 'bad'); }
+  }));
+}
+
+/* ═════════════════════════════════════════════════════════════════ ADS ══ */
+export async function showAds() {
+  box('adsBody').innerHTML = `
+    <div class="card" style="margin-bottom:14px">
+      <div class="card__head"><h3>Add a banner</h3></div>
+      <div class="alert alert--bad" id="adErr" hidden></div>
+      <label class="field"><span class="label">Banner image — wide works best, about 16:7</span>
+        <div class="filepick"><input type="file" id="adFile"
+          accept="image/jpeg,image/png,image/webp"><span id="adLabel">Choose banner image</span></div>
+      </label>
+      <div class="grid grid--2">
+        <label class="field"><span class="label">Link when tapped (optional)</span>
+          <input type="text" id="adLink" placeholder="https://…"></label>
+        <label class="field"><span class="label">Order</span>
+          <input type="number" id="adSort" value="0"></label>
+      </div>
+      <button class="btn" id="adGo">Publish banner</button>
+    </div>
+    <div id="adList"></div>`;
+
+  $('#adFile').addEventListener('change', () => {
+    const f = $('#adFile').files[0];
+    $('#adLabel').textContent = f ? `✓ ${f.name.slice(0, 24)}` : 'Choose banner image';
+  });
+
+  $('#adGo').addEventListener('click', async (e) => {
+    const err = $('#adErr'); err.hidden = true;
+    const file = $('#adFile').files[0];
+    if (!file) { err.textContent = 'Choose an image first.'; err.hidden = false; return; }
+    try {
+      await busy(e.currentTarget, 'Publishing…', async () => {
+        const url = await upload(BUCKET_PUBLIC, file);
+        await rpcAuth('tuna_admin_ad_save', {
+          p_image_url: url, p_link: $('#adLink').value || null,
+          p_sort: parseInt($('#adSort').value, 10) || 0
+        });
+      });
+      toast('Banner published.', 'good'); showAds();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  });
+
+  await loadAds();
+}
+
+async function loadAds() {
+  await load('adList', () => rpcAuth('tuna_admin_ads'), (rows) => {
+    if (!rows.length) return empty('No banners', 'Published banners show at the top of the player home screen.');
+    return wrap(`<table>
+      <thead><tr><th>Banner</th><th>Link</th><th>Order</th><th>State</th><th>Added</th><th>Actions</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td><img src="${esc(r.image_url)}" alt="" class="adthumb"></td>
+        <td class="xs">${r.link ? `<a href="${esc(r.link)}" target="_blank" rel="noopener">${esc(r.link)}</a>`
+          : '<span class="muted">none</span>'}</td>
+        <td class="num">${r.sort}</td>
+        <td>${r.active ? '<span class="pill pill--win">Live</span>' : '<span class="pill">Hidden</span>'}</td>
+        <td class="xs muted">${esc(when(r.created_at))}</td>
+        <td><div class="row" style="gap:6px;flex-wrap:nowrap">
+          <button class="btn btn--ghost btn--xs" data-ad-t="${r.id}" data-on="${r.active ? 1 : 0}">
+            ${r.active ? 'Hide' : 'Show'}</button>
+          <button class="btn btn--ghost btn--xs" data-ad-d="${r.id}">Delete</button>
+        </div></td>
+      </tr>`).join('')}</tbody></table>`);
+  });
+
+  $$('[data-ad-t]').forEach((b) => b.addEventListener('click', async () => {
+    await rpcAuth('tuna_admin_ad_toggle', { p_id: Number(b.dataset.adT), p_active: b.dataset.on !== '1' });
+    loadAds();
+  }));
+  $$('[data-ad-d]').forEach((b) => b.addEventListener('click', async () => {
+    await rpcAuth('tuna_admin_ad_delete', { p_id: Number(b.dataset.adD) });
+    toast('Banner deleted.'); loadAds();
+  }));
+}
+
+/* ══════════════════════════════════════════════════════════════ UC PACKS ══ */
+export async function showPacks() {
+  box('packsBody').innerHTML = `
+    <div class="card" style="margin-bottom:14px">
+      <div class="card__head"><h3>Add or update a pack</h3></div>
+      <div class="alert alert--bad" id="pkErr" hidden></div>
+      <div class="grid grid--4">
+        <label class="field"><span class="label">Name</span>
+          <input type="text" id="pkTitle" placeholder="660 UC"></label>
+        <label class="field"><span class="label">UC amount</span>
+          <input type="number" id="pkUc" placeholder="660"></label>
+        <label class="field"><span class="label">Price (Rs)</span>
+          <input type="number" id="pkPrice" placeholder="1150"></label>
+        <label class="field"><span class="label">Order</span>
+          <input type="number" id="pkSort" value="0"></label>
+      </div>
+      <button class="btn" id="pkGo">Save pack</button>
+    </div>
+    <div id="pkList"></div>`;
+
+  $('#pkGo').addEventListener('click', async (e) => {
+    const err = $('#pkErr'); err.hidden = true;
+    try {
+      await busy(e.currentTarget, 'Saving…', () => rpcAuth('tuna_admin_uc_save', {
+        p_title: $('#pkTitle').value,
+        p_uc: parseInt($('#pkUc').value, 10) || 0,
+        p_price: parseInt($('#pkPrice').value, 10),
+        p_sort: parseInt($('#pkSort').value, 10) || 0
+      }));
+      toast('Pack saved.', 'good'); showPacks();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  });
+
+  await loadPacks();
+}
+
+async function loadPacks() {
+  await load('pkList', () => rpcAuth('tuna_admin_uc_packs'), (rows) => {
+    if (!rows.length) return empty('No packs', 'Add one so the UC store has something to sell.');
+    return wrap(`<table>
+      <thead><tr><th>Name</th><th>UC</th><th>Price</th><th>Order</th><th>State</th><th>Actions</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td><b>${esc(r.title)}</b></td>
+        <td class="num" style="color:var(--marigold)">${num(r.uc_amount)}</td>
+        <td class="num">${money(r.price)}</td>
+        <td class="num">${r.sort}</td>
+        <td>${r.active ? '<span class="pill pill--win">On sale</span>' : '<span class="pill">Hidden</span>'}</td>
+        <td><div class="row" style="gap:6px;flex-wrap:nowrap">
+          <button class="btn btn--ghost btn--xs" data-pk-t="${r.id}" data-on="${r.active ? 1 : 0}"
+            data-t="${esc(r.title)}" data-u="${r.uc_amount}" data-p="${r.price}" data-s="${r.sort}">
+            ${r.active ? 'Hide' : 'Show'}</button>
+          <button class="btn btn--ghost btn--xs" data-pk-d="${r.id}">Delete</button>
+        </div></td>
+      </tr>`).join('')}</tbody></table>`);
+  });
+
+  $$('[data-pk-t]').forEach((b) => b.addEventListener('click', async () => {
+    await rpcAuth('tuna_admin_uc_save', {
+      p_id: Number(b.dataset.pkT), p_title: b.dataset.t, p_uc: Number(b.dataset.u),
+      p_price: Number(b.dataset.p), p_sort: Number(b.dataset.s), p_active: b.dataset.on !== '1'
+    });
+    loadPacks();
+  }));
+  $$('[data-pk-d]').forEach((b) => b.addEventListener('click', async () => {
+    await rpcAuth('tuna_admin_uc_delete', { p_id: Number(b.dataset.pkD) });
+    toast('Pack deleted.'); loadPacks();
+  }));
+}
+
+/* ════════════════════════════════════════════════════════ NOTIFICATIONS ══ */
+export function showNotify() {
+  box('notifyBody').innerHTML = `
+    <div class="card" style="max-width:560px">
+      <div class="card__head"><h3>Send a notification</h3></div>
+      <div class="alert alert--bad" id="nErr" hidden></div>
+      <div class="alert alert--good" id="nOk" hidden></div>
+      <label class="field"><span class="label">Player's phone number</span>
+        <input type="text" id="nPhone" class="mono" placeholder="98XXXXXXXX">
+        <span class="label" style="margin-top:4px;color:var(--ink-3)">
+          Leave blank to send to every player.</span></label>
+      <label class="field"><span class="label">Title</span>
+        <input type="text" id="nTitle" placeholder="e.g. UC delivered" maxlength="60"></label>
+      <label class="field"><span class="label">Message</span>
+        <textarea id="nBody" placeholder="What should they know?"></textarea></label>
+      <button class="btn" id="nGo">Send notification</button>
+    </div>`;
+
+  $('#nGo').addEventListener('click', async (e) => {
+    const err = $('#nErr'), ok = $('#nOk');
+    err.hidden = true; ok.hidden = true;
+    try {
+      const out = await busy(e.currentTarget, 'Sending…', () => rpcAuth('tuna_admin_notify', {
+        p_phone: $('#nPhone').value, p_title: $('#nTitle').value, p_body: $('#nBody').value
+      }));
+      ok.textContent = `Sent to ${out.sent_to}.`;
+      ok.hidden = false;
+      $('#nTitle').value = ''; $('#nBody').value = '';
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════ REPORTS ══ */
+let repFilter = 'open';
+
+export async function showReports() {
+  if (!$('#repTabs')) {
+    box('reportsBody').innerHTML =
+      `${filterBar('repTabs', ['open', 'closed', 'all'], repFilter)}<div id="repTable"></div>`;
+    $('#repTabs').addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-f]'); if (!b) return;
+      repFilter = b.dataset.f; syncBar('repTabs', repFilter); loadReports();
+    });
+  }
+  await loadReports();
+}
+
+async function loadReports() {
+  await load('repTable', () => rpcAuth('tuna_admin_reports', { p_status: repFilter }), (rows) => {
+    if (!rows.length) return empty('No reports', 'Players with a problem will appear here.');
+    return wrap(`<table>
+      <thead><tr><th>Player</th><th>Phone (ID)</th><th>Subject</th><th>Messages</th>
+        <th>Last</th><th>Status</th><th></th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td><div class="row" style="gap:8px;flex-wrap:nowrap">${avatar(r)}<b>${esc(r.name)}</b></div></td>
+        <td class="num">${esc(r.phone)}</td>
+        <td class="truncate" style="max-width:240px">${esc(r.subject)}</td>
+        <td class="num">${r.messages}</td>
+        <td class="xs muted">${esc(ago(r.updated_at))}</td>
+        <td>${pill(r.status)}</td>
+        <td><button class="btn btn--xs" data-rep="${r.id}" data-name="${esc(r.name)}"
+              data-open="${r.status === 'open' ? 1 : 0}">Open chat</button></td>
+      </tr>`).join('')}</tbody></table>`);
+  });
+  $$('[data-rep]').forEach((b) => b.addEventListener('click', () => chat(b.dataset)));
+}
+
+async function chat(d) {
+  openModal(`
+    <h2>Chat with ${esc(d.name)}</h2>
+    <p class="sub">Report #${esc(d.rep)}</p>
+    <div class="chatbox" id="acBox">${skeleton(40, 2)}</div>
+    <div class="alert alert--bad" id="acErr" hidden></div>
+    <label class="field" style="margin-top:12px">
+      <textarea id="acBody" placeholder="Your reply…"></textarea></label>
+    <div class="row">
+      <button class="btn grow" id="acSend">Send reply</button>
+      <button class="btn btn--ghost" id="acClose">${d.open === '1' ? 'Close report' : 'Reopen'}</button>
+      <button class="btn btn--ghost" id="acDone">Done</button>
+    </div>`);
+
+  const paint = async () => {
+    const msgs = await rpcAuth('tuna_admin_report_thread', { p_id: Number(d.rep) }) || [];
+    $('#acBox').innerHTML = msgs.length ? msgs.map((m) => `
+      <div class="bubble bubble--${m.sender}">
+        ${m.body ? `<p>${esc(m.body)}</p>` : ''}
+        ${m.media_url ? (m.media_type === 'video'
+          ? `<video src="${esc(m.media_url)}" controls playsinline></video>`
+          : `<img src="${esc(m.media_url)}" alt="" loading="lazy">`) : ''}
+        <time>${esc(ago(m.created_at))}</time>
+      </div>`).join('') : '<p class="xs muted">No messages.</p>';
+    $('#acBox').scrollTop = $('#acBox').scrollHeight;
+  };
+  await paint();
+
+  $('#acDone').addEventListener('click', () => { closeModal(); loadReports(); });
+  $('#acSend').addEventListener('click', async (e) => {
+    const err = $('#acErr'); err.hidden = true;
+    const body = $('#acBody').value.trim();
+    if (!body) { err.textContent = 'Write a reply first.'; err.hidden = false; return; }
+    try {
+      await busy(e.currentTarget, 'Sending…', () =>
+        rpcAuth('tuna_admin_report_reply', { p_id: Number(d.rep), p_body: body }));
+      $('#acBody').value = '';
+      await paint();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  });
+  $('#acClose').addEventListener('click', async (e) => {
+    await rpcAuth('tuna_admin_report_close', { p_id: Number(d.rep), p_closed: d.open === '1' });
+    closeModal(); toast('Report updated.'); loadReports();
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════ FEEDBACK ══ */
+export async function showFeedback() {
+  await load('feedbackBody', () => rpcAuth('tuna_admin_feedback'), (rows) => {
+    if (!rows.length) return empty('No feedback yet', 'Ratings from players land here.');
+    const avg = (rows.reduce((a, r) => a + r.stars, 0) / rows.length).toFixed(2);
+    return `<div class="grid grid--4" style="margin-bottom:14px">
+        <div class="stat stat--good"><b>${avg} ★</b><small>Average rating</small></div>
+        <div class="stat"><b>${rows.length}</b><small>Responses</small></div>
+      </div>` + wrap(`<table>
+      <thead><tr><th>Player</th><th>Phone (ID)</th><th>Rating</th><th>Comment</th><th>When</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td><b>${esc(r.name)}</b></td>
+        <td class="num">${esc(r.phone)}</td>
+        <td style="color:var(--marigold);white-space:nowrap">${'★'.repeat(r.stars)}${'☆'.repeat(5 - r.stars)}</td>
+        <td>${r.message ? esc(r.message) : '<span class="xs muted">no comment</span>'}</td>
+        <td class="xs muted">${esc(when(r.created_at))}</td>
+      </tr>`).join('')}</tbody></table>`);
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════ SETTINGS ══ */
+const SETTING_LABELS = {
+  commission_percent: ['Commission %', 'Cut taken from every settled match pot'],
+  min_deposit: ['Minimum deposit', 'Smallest amount a player may deposit'],
+  min_withdraw: ['Minimum withdrawal', 'Smallest amount a player may cash out'],
+  room_ttl_minutes: ['Room lifetime (minutes)', 'How long a room waits for an opponent'],
+  otp_dev_mode: ['OTP test mode', 'Unused while registration is number + password'],
+  support_note: ['Support note', 'Shown to players in a few places']
+};
+
+export async function showSettings() {
+  await load('settingsBody', () => rpcAuth('tuna_admin_settings'), (rows) => {
+    const shown = rows.filter((r) => !r.key.startsWith('otp_') || r.key === 'otp_dev_mode');
+    return `<div class="card" style="max-width:640px">
+      <div class="card__head"><h3>App settings</h3></div>
+      <div class="alert alert--bad" id="stErr" hidden></div>
+      ${shown.map((r) => {
+        const [label, note] = SETTING_LABELS[r.key] || [r.key, ''];
+        return `<label class="field">
+          <span class="label">${esc(label)}</span>
+          <div class="row" style="flex-wrap:nowrap">
+            <input type="text" class="grow" id="set_${esc(r.key)}" value="${esc(r.value)}">
+            <button class="btn btn--xs" data-set="${esc(r.key)}">Save</button>
+          </div>
+          ${note ? `<span class="label" style="margin-top:4px;color:var(--ink-3)">${esc(note)}</span>` : ''}
+        </label>`;
+      }).join('')}
+    </div>`;
+  });
+
+  $$('[data-set]').forEach((b) => b.addEventListener('click', async () => {
+    const key = b.dataset.set;
+    const err = $('#stErr'); err.hidden = true;
+    try {
+      await busy(b, '…', () => rpcAuth('tuna_admin_set_setting',
+        { p_key: key, p_value: $(`#set_${key}`).value }));
+      toast('Saved.', 'good');
+    } catch (e) { err.textContent = e.message; err.hidden = false; }
+  }));
+}
+
+/* ─────────────────────────────────────────────────────────────── helpers ── */
+function filterBar(id, opts, active) {
+  return `<div class="filterbar" id="${id}">${opts.map((o) =>
+    `<button data-f="${o}" aria-pressed="${o === active}">${o}</button>`).join('')}</div>`;
+}
+
+function syncBar(id, active) {
+  $$(`#${id} button`).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.f === active)));
+}
+
+function rejectModal(title, action) {
+  openModal(`
+    <h2>${esc(title)}</h2>
+    <p class="sub">The player sees your reason.</p>
+    <div class="alert alert--bad" id="rjErr" hidden></div>
+    <label class="field"><span class="label">Reason</span>
+      <input type="text" id="rjNote" placeholder="e.g. Screenshot does not match the amount"></label>
+    <div class="row" style="margin-top:16px">
+      <button class="btn grow" id="rjGo">Confirm reject</button>
+      <button class="btn btn--ghost" id="rjCancel">Cancel</button>
+    </div>`);
+  $('#rjCancel').addEventListener('click', closeModal);
+  $('#rjGo').addEventListener('click', async (e) => {
+    const err = $('#rjErr'); err.hidden = true;
+    try {
+      await busy(e.currentTarget, 'Working…', () => action($('#rjNote').value));
+      closeModal();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  });
+}
+
+function debounce(fn, ms) {
+  let t;
+  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
