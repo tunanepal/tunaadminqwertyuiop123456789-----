@@ -386,3 +386,19 @@ tr.rowdim td { opacity: .55; }
 }
 .filepick:hover { border-color: var(--indigo); color: var(--indigo); }
 .filepick input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+/* centred filter rows, matching the player app */
+.filterbar { justify-content: center; }
+.card__head + .filterbar, main > .filterbar { justify-content: flex-start; }
+
+/* checkbox + amount on one line, used when settling a disputed match */
+.agreecheck {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 13px; margin-top: 12px;
+  border: 1.5px solid var(--line); border-radius: var(--r-sm);
+  background: var(--panel-2); cursor: pointer;
+}
+.agreecheck:has(input[type=checkbox]:checked) { border-color: var(--crimson); background: var(--crimson-sk); }
+.agreecheck input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--crimson); cursor: pointer; }
+.agreecheck span { flex: 1; font-size: 13.5px; }
+.agreecheck input[type=number] { padding: 6px 9px; }

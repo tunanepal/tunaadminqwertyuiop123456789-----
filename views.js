@@ -60,7 +60,7 @@ async function loadPlayers() {
     if (!rows.length) return empty('No players', 'Nobody matches that search.');
     return wrap(`<table>
       <thead><tr>
-        <th>Player</th><th>Phone (ID)</th><th>Points</th><th>Matches</th>
+        <th>Player</th><th>Phone (ID)</th><th>Points</th><th>Owed</th><th>Matches</th>
         <th>Wins</th><th>Deposited</th><th>Withdrawn</th><th>Joined</th><th>Actions</th>
       </tr></thead><tbody>
       ${rows.map((r) => `<tr${r.blocked ? ' class="rowdim"' : ''}>
@@ -69,6 +69,8 @@ async function loadPlayers() {
           ${r.blocked ? '<span class="pill pill--bad">Blocked</span>' : ''}</span></div></td>
         <td class="num">${esc(r.phone)}</td>
         <td class="num" style="color:var(--marigold)">${money(r.points)}</td>
+        <td class="num">${r.owed > 0
+          ? `<span class="pill pill--bad">${money(r.owed)}</span>` : '<span class="muted">—</span>'}</td>
         <td class="num">${r.matches}</td>
         <td class="num">${r.wins}</td>
         <td class="num">${money(r.deposited)}</td>
@@ -77,6 +79,8 @@ async function loadPlayers() {
         <td><div class="row" style="gap:6px;flex-wrap:nowrap">
           <button class="btn btn--gold btn--xs" data-pts="${r.id}" data-name="${esc(r.name)}"
                   data-bal="${r.points}">Points</button>
+          <button class="btn btn--xs" data-fine="${r.id}" data-name="${esc(r.name)}"
+                  data-bal="${r.points}">Fine</button>
           <button class="btn ${r.blocked ? 'btn--win' : 'btn--ghost'} btn--xs"
                   data-block="${r.id}" data-on="${r.blocked ? 1 : 0}">
             ${r.blocked ? 'Unblock' : 'Block'}</button>
@@ -86,6 +90,7 @@ async function loadPlayers() {
   });
 
   $$('[data-pts]').forEach((b) => b.addEventListener('click', () => pointsModal(b.dataset)));
+  $$('[data-fine]').forEach((b) => b.addEventListener('click', () => fineModal(b.dataset)));
   $$('[data-block]').forEach((b) => b.addEventListener('click', async () => {
     const on = b.dataset.on === '1';
     try {
@@ -117,6 +122,74 @@ function pointsModal(d) {
         p_player: d.pts, p_amount: parseInt($('#ptAmt').value, 10), p_note: $('#ptNote').value
       }));
       closeModal(); toast('Points updated.', 'good'); loadPlayers();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  });
+}
+
+const FINE_REASONS = [
+  'False result claim',
+  'Cheating or hacking',
+  'Wrong room settings',
+  'Abusive behaviour',
+  'Teaming with opponent'
+];
+
+function fineModal(d) {
+  openModal(`
+    <h2>Fine a player</h2>
+    <p class="sub">${esc(d.name)} · balance ${money(d.bal)}</p>
+    <div class="alert alert--bad" id="fnErr" hidden></div>
+
+    <label class="field"><span class="label">Amount</span>
+      <div class="filterbar" id="fnChips" style="margin-bottom:8px">
+        ${[50, 100, 200, 500].map((a) =>
+          `<button data-a="${a}" aria-pressed="${a === 50}">Rs ${a}</button>`).join('')}
+      </div>
+      <input type="number" id="fnAmt" value="50">
+    </label>
+
+    <label class="field"><span class="label">Reason — the player sees this</span>
+      <div class="filterbar" id="fnReasons" style="margin-bottom:8px">
+        ${FINE_REASONS.map((r) => `<button data-r="${esc(r)}">${esc(r)}</button>`).join('')}
+      </div>
+      <input type="text" id="fnReason" placeholder="e.g. False result claim on match #12">
+    </label>
+
+    <div class="alert alert--info">
+      If their balance is short, whatever is there is taken now and the rest is
+      collected automatically from their next deposit or win.
+    </div>
+
+    <div class="row" style="margin-top:6px">
+      <button class="btn grow" id="fnGo">Issue fine</button>
+      <button class="btn btn--ghost" id="fnCancel">Cancel</button>
+    </div>`);
+
+  $('#fnChips').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-a]'); if (!b) return;
+    $('#fnAmt').value = b.dataset.a;
+    $$('#fnChips button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  });
+  $('#fnReasons').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-r]'); if (!b) return;
+    $('#fnReason').value = b.dataset.r;
+    $$('#fnReasons button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  });
+  $('#fnCancel').addEventListener('click', closeModal);
+
+  $('#fnGo').addEventListener('click', async (e) => {
+    const err = $('#fnErr'); err.hidden = true;
+    try {
+      const out = await busy(e.currentTarget, 'Issuing…', () => rpcAuth('tuna_admin_fine', {
+        p_player: d.fine,
+        p_amount: parseInt($('#fnAmt').value, 10),
+        p_reason: $('#fnReason').value
+      }));
+      closeModal();
+      toast(out.outstanding > 0
+        ? `Fined. ${money(out.collected)} taken, ${money(out.outstanding)} still owed.`
+        : `Fined ${money(out.collected)}.`, 'good');
+      loadPlayers();
     } catch (ex) { err.textContent = ex.message; err.hidden = false; }
   });
 }
@@ -375,6 +448,13 @@ function settleModal(d) {
     </div>
     <label class="field" style="margin-top:14px"><span class="label">Note (optional)</span>
       <input type="text" id="seNote" placeholder="Both players see this"></label>
+
+    <label class="agreecheck">
+      <input type="checkbox" id="seFine">
+      <span>Fine the other player for a false claim</span>
+      <input type="number" id="seFineAmt" value="50" style="width:88px">
+    </label>
+
     <div class="row" style="margin-top:12px">
       <button class="btn btn--ghost grow" id="seVoid">Void — return both stakes</button>
       <button class="btn btn--ghost" id="seCancel">Cancel</button>
@@ -389,11 +469,16 @@ function settleModal(d) {
 async function doSettle(btn, id, winner) {
   const err = $('#seErr'); err.hidden = true;
   try {
-    await busy(btn, 'Settling…', () => rpcAuth('tuna_admin_settle_match', {
-      p_id: Number(id), p_winner: winner, p_note: $('#seNote').value
+    const fine = winner && $('#seFine')?.checked
+      ? parseInt($('#seFineAmt').value, 10) || 0 : 0;
+    const out = await busy(btn, 'Settling…', () => rpcAuth('tuna_admin_settle_match', {
+      p_id: Number(id), p_winner: winner, p_note: $('#seNote').value,
+      p_fine_loser: fine, p_fine_reason: fine ? `False result claim on match #${id}` : null
     }));
     closeModal();
-    toast(winner ? 'Payout released.' : 'Match voided, stakes returned.', 'good');
+    toast(!winner ? 'Match voided, stakes returned.'
+      : out.fined ? `Payout released. Other player fined ${money(out.fined)}.`
+      : 'Payout released.', 'good');
     loadMatches();
   } catch (ex) { err.textContent = ex.message; err.hidden = false; }
 }
@@ -775,6 +860,57 @@ async function chat(d) {
   });
 }
 
+/* ═════════════════════════════════════════════════════════════════ FINES ══ */
+let fineFilter = 'all';
+
+export async function showFines() {
+  if (!$('#fnTabs')) {
+    box('finesBody').innerHTML =
+      `${filterBar('fnTabs', ['all', 'outstanding', 'cleared'], fineFilter)}<div id="fnTable"></div>`;
+    $('#fnTabs').addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-f]'); if (!b) return;
+      fineFilter = b.dataset.f; syncBar('fnTabs', fineFilter); loadFines();
+    });
+  }
+  await loadFines();
+}
+
+async function loadFines() {
+  await load('fnTable', () => rpcAuth('tuna_admin_fines', { p_status: fineFilter }), (rows) => {
+    if (!rows.length) return empty('No fines', 'Fines you issue are listed here.');
+    const owed = rows.reduce((a, r) => a + Number(r.outstanding), 0);
+    const taken = rows.reduce((a, r) => a + Number(r.collected), 0);
+    return `<div class="grid grid--4" style="margin-bottom:14px">
+        <div class="stat stat--good"><b>${money(taken)}</b><small>Collected</small></div>
+        <div class="stat ${owed ? 'stat--alert' : ''}"><b>${money(owed)}</b><small>Still owed</small></div>
+        <div class="stat"><b>${rows.length}</b><small>Fines issued</small></div>
+      </div>` + wrap(`<table>
+      <thead><tr><th>Player</th><th>Phone (ID)</th><th>Fine</th><th>Taken</th>
+        <th>Owed</th><th>Reason</th><th>Match</th><th>When</th><th></th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td><div class="row" style="gap:8px;flex-wrap:nowrap">${avatar(r)}<b>${esc(r.name)}</b></div></td>
+        <td class="num">${esc(r.phone)}</td>
+        <td class="num">${money(r.amount)}</td>
+        <td class="num" style="color:var(--win)">${money(r.collected)}</td>
+        <td class="num">${r.outstanding > 0
+          ? `<span class="pill pill--bad">${money(r.outstanding)}</span>`
+          : '<span class="pill pill--win">clear</span>'}</td>
+        <td>${esc(r.reason)}</td>
+        <td class="num">${r.match_id ? '#' + r.match_id : '—'}</td>
+        <td class="xs muted">${esc(when(r.created_at))}</td>
+        <td>${r.outstanding > 0
+          ? `<button class="btn btn--ghost btn--xs" data-waive="${r.id}">Waive</button>` : ''}</td>
+      </tr>`).join('')}</tbody></table>`);
+  });
+
+  $$('[data-waive]').forEach((b) => b.addEventListener('click', async () => {
+    try {
+      await busy(b, '…', () => rpcAuth('tuna_admin_waive_fine', { p_id: Number(b.dataset.waive) }));
+      toast('Remaining amount written off.'); loadFines();
+    } catch (e) { toast(e.message, 'bad'); }
+  }));
+}
+
 /* ══════════════════════════════════════════════════════════════ FEEDBACK ══ */
 export async function showFeedback() {
   await load('feedbackBody', () => rpcAuth('tuna_admin_feedback'), (rows) => {
@@ -796,18 +932,30 @@ export async function showFeedback() {
 }
 
 /* ══════════════════════════════════════════════════════════════ SETTINGS ══ */
+const RULE_KEYS = ['rules_pubg', 'rules_freefire'];
+
 const SETTING_LABELS = {
   commission_percent: ['Commission %', 'Cut taken from every settled match pot'],
   min_deposit: ['Minimum deposit', 'Smallest amount a player may deposit'],
   min_withdraw: ['Minimum withdrawal', 'Smallest amount a player may cash out'],
   room_ttl_minutes: ['Room lifetime (minutes)', 'How long a room waits for an opponent'],
   otp_dev_mode: ['OTP test mode', 'Unused while registration is number + password'],
-  support_note: ['Support note', 'Shown to players in a few places']
+  support_note: ['Support note', 'Shown to players in a few places'],
+  rules_pubg: ['PUBG match rules', ''],
+  rules_freefire: ['Free Fire match rules', '']
 };
+
+/* The rulebook is edited as plain lines. Players must tick to accept it
+   before they can join a room. */
+const RULE_HELP = `Line prefixes — <b>#</b> heading · <b>x</b> forbidden (red) ·
+  <b>y</b> allowed (green) · <b>!</b> penalty (red box) · <b>-</b> plain bullet`;
 
 export async function showSettings() {
   await load('settingsBody', () => rpcAuth('tuna_admin_settings'), (rows) => {
-    const shown = rows.filter((r) => !r.key.startsWith('otp_') || r.key === 'otp_dev_mode');
+    const rules = rows.filter((r) => RULE_KEYS.includes(r.key));
+    const shown = rows.filter((r) =>
+      !RULE_KEYS.includes(r.key) && (!r.key.startsWith('otp_') || r.key === 'otp_dev_mode'));
+
     return `<div class="card" style="max-width:640px">
       <div class="card__head"><h3>App settings</h3></div>
       <div class="alert alert--bad" id="stErr" hidden></div>
@@ -822,7 +970,17 @@ export async function showSettings() {
           ${note ? `<span class="label" style="margin-top:4px;color:var(--ink-3)">${esc(note)}</span>` : ''}
         </label>`;
       }).join('')}
-    </div>`;
+    </div>
+    ${rules.map((r) => `
+      <div class="card" style="margin-top:14px">
+        <div class="card__head">
+          <h3>${esc((SETTING_LABELS[r.key] || [r.key])[0])}</h3>
+          <button class="btn btn--xs" data-set="${esc(r.key)}">Save rules</button>
+        </div>
+        <p class="xs muted" style="margin-bottom:10px">${RULE_HELP}</p>
+        <textarea id="set_${esc(r.key)}" rows="16"
+          style="font-family:var(--mono);font-size:13px;line-height:1.6">${esc(r.value)}</textarea>
+      </div>`).join('')}`;
   });
 
   $$('[data-set]').forEach((b) => b.addEventListener('click', async () => {
