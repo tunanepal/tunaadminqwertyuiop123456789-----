@@ -50,6 +50,7 @@
       <p class="eyebrow">Overview</p>
       <button class="navb" data-view="dashboard" aria-current="page">Dashboard</button>
       <button class="navb" data-view="players">Players<span class="count" hidden>0</span></button>
+      <button class="navb" data-view="resets">Password resets<span class="count" hidden>0</span></button>
     </div>
 
     <div class="navgroup">
@@ -111,6 +112,11 @@
     <section class="view" id="view-players">
       <div class="head"><div><h1>Players</h1><p>Search, adjust points, block and unblock.</p></div></div>
       <div id="playersBody"></div>
+    </section>
+
+    <section class="view" id="view-resets">
+      <div class="head"><div><h1>Password resets</h1><p>Players locked out of their account.</p></div></div>
+      <div id="resetsBody"></div>
     </section>
 
     <section class="view" id="view-deposits">

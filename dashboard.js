@@ -229,6 +229,8 @@ function paintNavCounts(s) {
   set('store', s.pending_store);
   set('matches', s.disputes);
   set('reports', s.open_reports);
+  set('resets', s.open_resets);
+  set('tournaments', s.pending_tourn);
 }
 
 /** Charts hold baked-in colours, so a theme flip needs a redraw. */

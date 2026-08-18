@@ -77,10 +77,14 @@ async function loadPlayers() {
         <td class="num">${money(r.withdrawn)}</td>
         <td class="xs muted">${esc(when(r.created_at))}</td>
         <td><div class="row" style="gap:6px;flex-wrap:nowrap">
-          <button class="btn btn--gold btn--xs" data-pts="${r.id}" data-name="${esc(r.name)}"
-                  data-bal="${r.points}">Points</button>
+          <button class="btn btn--win btn--xs" data-pts="${r.id}" data-name="${esc(r.name)}"
+                  data-bal="${r.points}">Add</button>
+          <button class="btn btn--gold btn--xs" data-take="${r.id}" data-name="${esc(r.name)}"
+                  data-bal="${r.points}">Take</button>
           <button class="btn btn--xs" data-fine="${r.id}" data-name="${esc(r.name)}"
                   data-bal="${r.points}">Fine</button>
+          <button class="btn btn--ghost btn--xs" data-pw="${r.id}" data-name="${esc(r.name)}"
+                  data-phone="${esc(r.phone)}">Password</button>
           <button class="btn ${r.blocked ? 'btn--win' : 'btn--ghost'} btn--xs"
                   data-block="${r.id}" data-on="${r.blocked ? 1 : 0}">
             ${r.blocked ? 'Unblock' : 'Block'}</button>
@@ -91,6 +95,8 @@ async function loadPlayers() {
 
   $$('[data-pts]').forEach((b) => b.addEventListener('click', () => pointsModal(b.dataset)));
   $$('[data-fine]').forEach((b) => b.addEventListener('click', () => fineModal(b.dataset)));
+  $$('[data-take]').forEach((b) => b.addEventListener('click', () => takeModal(b.dataset)));
+  $$('[data-pw]').forEach((b) => b.addEventListener('click', () => passwordModal(b.dataset)));
   $$('[data-block]').forEach((b) => b.addEventListener('click', async () => {
     const on = b.dataset.on === '1';
     try {
@@ -122,6 +128,90 @@ function pointsModal(d) {
         p_player: d.pts, p_amount: parseInt($('#ptAmt').value, 10), p_note: $('#ptNote').value
       }));
       closeModal(); toast('Points updated.', 'good'); loadPlayers();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  });
+}
+
+function takeModal(d) {
+  openModal(`
+    <h2>Take points</h2>
+    <p class="sub">${esc(d.name)} · balance ${money(d.bal)}</p>
+    <div class="alert alert--bad" id="tkErr" hidden></div>
+
+    <label class="field"><span class="label">Amount to remove</span>
+      <div class="filterbar" id="tkChips" style="margin-bottom:8px">
+        ${[50, 100, 500].map((a) => `<button data-a="${a}">Rs ${a}</button>`).join('')}
+        <button data-a="${d.bal}">All (${d.bal})</button>
+      </div>
+      <input type="number" id="tkAmt" placeholder="Enter amount">
+    </label>
+
+    <label class="field"><span class="label">Reason — the player sees this</span>
+      <input type="text" id="tkReason" placeholder="e.g. Correction for deposit #14"></label>
+
+    <div class="alert alert--info">
+      A straight deduction. Nothing is carried forward — use <b>Fine</b> instead
+      if you want the rest chased from their next deposit.
+    </div>
+
+    <div class="row" style="margin-top:6px">
+      <button class="btn grow" id="tkGo">Take points</button>
+      <button class="btn btn--ghost" id="tkCancel">Cancel</button>
+    </div>`);
+
+  $('#tkChips').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-a]'); if (!b) return;
+    $('#tkAmt').value = b.dataset.a;
+    $$('#tkChips button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  });
+  $('#tkCancel').addEventListener('click', closeModal);
+  $('#tkGo').addEventListener('click', async (e) => {
+    const err = $('#tkErr'); err.hidden = true;
+    try {
+      const out = await busy(e.currentTarget, 'Removing…', () => rpcAuth('tuna_admin_take_points', {
+        p_player: d.take,
+        p_amount: parseInt($('#tkAmt').value, 10),
+        p_reason: $('#tkReason').value
+      }));
+      closeModal();
+      toast(`${money(out.taken)} removed. New balance ${money(out.points)}.`, 'good');
+      loadPlayers();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  });
+}
+
+function passwordModal(d, requestId = null) {
+  const suggested = 'tuna' + Math.floor(1000 + Math.random() * 9000);
+  openModal(`
+    <h2>Set a new password</h2>
+    <p class="sub">${esc(d.name)} · ${esc(d.phone)}</p>
+    <div class="alert alert--bad" id="spErr" hidden></div>
+
+    <label class="field"><span class="label">New password</span>
+      <input type="text" id="spNew" class="mono" value="${suggested}">
+      <span class="label" style="margin-top:4px;color:var(--ink-3)">
+        Give this to the player. They can change it in Settings once signed in.</span></label>
+
+    <div class="alert alert--info">
+      Saving signs them out everywhere, so the old password stops working immediately.
+    </div>
+
+    <div class="row" style="margin-top:6px">
+      <button class="btn grow" id="spGo">Set password</button>
+      <button class="btn btn--ghost" id="spCancel">Cancel</button>
+    </div>`);
+
+  $('#spCancel').addEventListener('click', closeModal);
+  $('#spGo').addEventListener('click', async (e) => {
+    const err = $('#spErr'); err.hidden = true;
+    const pw = $('#spNew').value;
+    try {
+      await busy(e.currentTarget, 'Saving…', () => rpcAuth('tuna_admin_set_player_password', {
+        p_player: d.pw || d.playerId, p_password: pw, p_request: requestId
+      }));
+      closeModal();
+      toast(`Password set to ${pw} — pass it to the player.`, 'good');
+      if (requestId) loadResets(); else loadPlayers();
     } catch (ex) { err.textContent = ex.message; err.hidden = false; }
   });
 }
@@ -858,6 +948,57 @@ async function chat(d) {
     await rpcAuth('tuna_admin_report_close', { p_id: Number(d.rep), p_closed: d.open === '1' });
     closeModal(); toast('Report updated.'); loadReports();
   });
+}
+
+/* ════════════════════════════════════════════════════════ PASSWORD RESETS ══ */
+let resetFilter = 'open';
+
+export async function showResets() {
+  if (!$('#rsTabs')) {
+    box('resetsBody').innerHTML = `
+      <div class="alert alert--info" style="margin-bottom:14px">
+        Players who forget their password send a request here. Set a new one,
+        then pass it to them on WhatsApp, Messenger or a call.
+      </div>
+      ${filterBar('rsTabs', ['open', 'done', 'cancelled', 'all'], resetFilter)}
+      <div id="rsTable"></div>`;
+    $('#rsTabs').addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-f]'); if (!b) return;
+      resetFilter = b.dataset.f; syncBar('rsTabs', resetFilter); loadResets();
+    });
+  }
+  await loadResets();
+}
+
+async function loadResets() {
+  await load('rsTable', () => rpcAuth('tuna_admin_reset_requests', { p_status: resetFilter }), (rows) => {
+    if (!rows.length) return empty('No requests', `Nothing ${resetFilter} right now.`);
+    return wrap(`<table>
+      <thead><tr><th>Player</th><th>Phone (ID)</th><th>Message</th><th>Asked</th>
+        <th>Status</th><th>Actions</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td>${r.name
+          ? `<div class="row" style="gap:8px;flex-wrap:nowrap">${avatar(r)}<b>${esc(r.name)}</b></div>`
+          : '<span class="xs muted">no account</span>'}</td>
+        <td class="num">${esc(r.phone)}</td>
+        <td class="xs">${r.note ? esc(r.note) : '<span class="muted">no message</span>'}</td>
+        <td class="xs muted">${esc(ago(r.created_at))}</td>
+        <td>${pill(r.status)}</td>
+        <td>${r.status === 'open' && r.player_id ? `<div class="row" style="gap:6px;flex-wrap:nowrap">
+            <button class="btn btn--xs" data-rspw="${r.id}" data-pid="${r.player_id}"
+              data-name="${esc(r.name)}" data-phone="${esc(r.phone)}">Set password</button>
+            <button class="btn btn--ghost btn--xs" data-rsx="${r.id}">Dismiss</button></div>`
+          : '<span class="xs muted">handled</span>'}</td>
+      </tr>`).join('')}</tbody></table>`);
+  });
+
+  $$('[data-rspw]').forEach((b) => b.addEventListener('click', () =>
+    passwordModal({ playerId: b.dataset.pid, name: b.dataset.name, phone: b.dataset.phone },
+                  Number(b.dataset.rspw))));
+  $$('[data-rsx]').forEach((b) => b.addEventListener('click', async () => {
+    await rpcAuth('tuna_admin_cancel_reset', { p_id: Number(b.dataset.rsx) });
+    toast('Request dismissed.'); loadResets();
+  }));
 }
 
 /* ═════════════════════════════════════════════════════════════════ FINES ══ */
