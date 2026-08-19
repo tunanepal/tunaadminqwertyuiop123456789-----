@@ -230,6 +230,7 @@ function paintNavCounts(s) {
   set('matches', s.disputes);
   set('reports', s.open_reports);
   set('resets', s.open_resets);
+  set('escalations', s.open_escalations);
   set('tournaments', s.pending_tourn);
 }
 

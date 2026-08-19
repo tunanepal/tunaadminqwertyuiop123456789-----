@@ -1474,3 +1474,186 @@ function tournRoom(d) {
     } catch (ex) { err.textContent = ex.message; err.hidden = false; }
   });
 }
+
+/* ═══════════════════════════════════════════════════ SUPPORT AGENTS ══ */
+export async function showAgents() {
+  box('agentsBody').innerHTML = `
+    <div class="alert alert--info" style="margin-bottom:14px">
+      Support agents talk to players and raise tickets. They cannot move points,
+      approve deposits, or change anything about an account. Only IDs created
+      here can sign in to the support desk.
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-bottom:14px">
+      <button class="btn" id="agNew">Create agent</button>
+    </div>
+    <div id="agTable"></div>`;
+  $('#agNew').addEventListener('click', () => agentModal(null));
+  await loadAgents();
+}
+
+async function loadAgents() {
+  await load('agTable', () => rpcAuth('tuna_admin_agents'), (rows) => {
+    if (!rows.length) return empty('No agents yet',
+      'Create one and give them the ID and password you set.');
+    return wrap(`<table>
+      <thead><tr><th>Agent</th><th>Login ID</th><th>Active chats</th><th>Handled</th>
+        <th>Tickets raised</th><th>Last seen</th><th>State</th><th>Actions</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr${r.active ? '' : ' class="rowdim"'}>
+        <td><b>${esc(r.name)}</b></td>
+        <td class="num" style="color:var(--marigold)">${esc(r.id)}</td>
+        <td class="num">${r.active_chats}</td>
+        <td class="num">${r.handled}</td>
+        <td class="num">${r.raised}</td>
+        <td class="xs muted">${r.last_login ? esc(ago(r.last_login)) : 'never'}</td>
+        <td>${r.active ? '<span class="pill pill--win">Active</span>'
+                       : '<span class="pill">Switched off</span>'}</td>
+        <td><div class="row" style="gap:6px;flex-wrap:nowrap">
+          <button class="btn btn--ghost btn--xs" data-aged='${esc(JSON.stringify(r))}'>Edit</button>
+          <button class="btn btn--ghost btn--xs" data-agdel="${esc(r.id)}">Delete</button>
+        </div></td>
+      </tr>`).join('')}</tbody></table>`);
+  });
+
+  $$('[data-aged]').forEach((b) => b.addEventListener('click', () =>
+    agentModal(JSON.parse(b.dataset.aged))));
+  $$('[data-agdel]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('Delete this agent? Their conversations stay, but the login stops working.')) return;
+    await rpcAuth('tuna_admin_agent_delete', { p_id: b.dataset.agdel });
+    toast('Agent deleted.');
+    loadAgents();
+  }));
+}
+
+function agentModal(a) {
+  const suggested = 'SUP' + String(Math.floor(100 + Math.random() * 900));
+  const pw = 'tuna' + Math.floor(100000 + Math.random() * 900000);
+  openModal(`
+    <h2>${a ? 'Edit agent' : 'Create support agent'}</h2>
+    <p class="sub">${a ? 'Leave the password blank to keep the current one.'
+                       : 'Give them the ID and password below — that is their only way in.'}</p>
+    <div class="alert alert--bad" id="agErr" hidden></div>
+
+    <div class="grid grid--2">
+      <label class="field"><span class="label">Login ID</span>
+        <input type="text" id="agId" class="mono" value="${esc(a?.id || suggested)}"
+               ${a ? 'readonly' : ''}></label>
+      <label class="field"><span class="label">Agent name</span>
+        <input type="text" id="agName" value="${esc(a?.name || '')}" placeholder="Anjali Shrestha"></label>
+    </div>
+
+    <label class="field"><span class="label">${a ? 'New password (optional)' : 'Password'}</span>
+      <input type="text" id="agPw" class="mono" value="${a ? '' : pw}"
+             placeholder="At least 8 characters"></label>
+
+    <label class="agreecheck">
+      <input type="checkbox" id="agActive" ${a?.active === false ? '' : 'checked'}>
+      <span>Account is active and can sign in</span>
+    </label>
+
+    <div class="row" style="margin-top:14px">
+      <button class="btn grow" id="agGo">${a ? 'Save changes' : 'Create agent'}</button>
+      <button class="btn btn--ghost" id="agX">Cancel</button>
+    </div>`);
+
+  $('#agX').addEventListener('click', closeModal);
+  $('#agGo').addEventListener('click', async (e) => {
+    const err = $('#agErr'); err.hidden = true;
+    const id = $('#agId').value, pwv = $('#agPw').value;
+    try {
+      await busy(e.currentTarget, 'Saving…', () => rpcAuth('tuna_admin_agent_save', {
+        p_id: id, p_name: $('#agName').value,
+        p_password: pwv || null, p_active: $('#agActive').checked
+      }));
+      closeModal();
+      toast(a ? 'Agent updated.' : `Agent ${id} created — password ${pwv}`, 'good');
+      loadAgents();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  });
+}
+
+/* ══════════════════════════════════════════════════════ ESCALATIONS ══ */
+let escFilter = 'open';
+
+export async function showEscalations() {
+  if (!$('#esTabs')) {
+    box('escalationsBody').innerHTML = `
+      <div class="alert alert--info" style="margin-bottom:14px">
+        Tickets raised by support. Do whatever action is needed elsewhere in the
+        panel — refund, fine, unblock — then mark the ticket solved. The agent
+        is notified and replies to the player.
+      </div>
+      ${filterBar('esTabs', ['open', 'solved', 'rejected', 'all'], escFilter)}
+      <div id="esTable"></div>`;
+    $('#esTabs').addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-f]'); if (!b) return;
+      escFilter = b.dataset.f; syncBar('esTabs', escFilter); loadEscalations();
+    });
+  }
+  await loadEscalations();
+}
+
+async function loadEscalations() {
+  await load('esTable', () => rpcAuth('tuna_admin_escalations', { p_status: escFilter }), (rows) => {
+    if (!rows.length) return empty('No tickets', `Nothing ${escFilter} from the support desk.`);
+    return wrap(`<table>
+      <thead><tr><th>#</th><th>Customer</th><th>Phone (ID)</th><th>Type</th><th>Issue</th>
+        <th>Asked for</th><th>Amount</th><th>Agent</th><th>Raised</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td class="num">${r.id}</td>
+        <td><div class="row" style="gap:8px;flex-wrap:nowrap">${avatar(r)}
+          <span><b>${esc(r.name)}</b>${r.blocked ? '<br><span class="pill pill--bad">blocked</span>' : ''}</span>
+        </div></td>
+        <td class="num">${esc(r.phone)}</td>
+        <td><span class="pill pill--info">${esc(r.category)}</span></td>
+        <td style="max-width:300px"><b>${esc(r.subject)}</b>
+          <br><span class="xs muted">${esc(r.issue)}</span></td>
+        <td class="xs">${r.requested ? esc(r.requested) : '—'}</td>
+        <td class="num">${r.amount ? money(r.amount) : '—'}</td>
+        <td class="xs">${esc(r.agent_name || r.agent_id || '—')}</td>
+        <td class="xs muted">${esc(ago(r.created_at))}</td>
+        <td>${pill(r.status)}${r.admin_note ? `<br><span class="xs muted">${esc(r.admin_note)}</span>` : ''}</td>
+        <td>${r.status === 'open' ? `<div class="row" style="gap:6px;flex-wrap:nowrap">
+            <button class="btn btn--win btn--xs" data-esok="${r.id}" data-sub="${esc(r.subject)}">Solve</button>
+            <button class="btn btn--ghost btn--xs" data-esno="${r.id}" data-sub="${esc(r.subject)}">Reject</button>
+          </div>` : '<span class="xs muted">closed</span>'}</td>
+      </tr>`).join('')}</tbody></table>`);
+  });
+
+  $$('[data-esok]').forEach((b) => b.addEventListener('click', () =>
+    resolveModal(b.dataset.esok, b.dataset.sub, 'solve')));
+  $$('[data-esno]').forEach((b) => b.addEventListener('click', () =>
+    resolveModal(b.dataset.esno, b.dataset.sub, 'reject')));
+}
+
+function resolveModal(id, subject, action) {
+  const solving = action === 'solve';
+  openModal(`
+    <h2>${solving ? 'Mark solved' : 'Reject ticket'}</h2>
+    <p class="sub">#${esc(id)} · ${esc(subject)}</p>
+    <div class="alert alert--bad" id="rsErr" hidden></div>
+    ${solving ? `<div class="alert alert--info">
+      Make sure you have actually done the thing first — the refund, the fine,
+      the unblock. This only closes the ticket and tells the agent.
+    </div>` : ''}
+    <label class="field"><span class="label">Note for the agent</span>
+      <input type="text" id="rsNote" placeholder="${solving
+        ? 'e.g. Stake refunded and opponent fined 50'
+        : 'e.g. Proof does not show any rule break'}"></label>
+    <div class="row" style="margin-top:14px">
+      <button class="btn ${solving ? 'btn--win' : ''} grow" id="rsGo">
+        ${solving ? 'Mark solved' : 'Reject'}</button>
+      <button class="btn btn--ghost" id="rsX">Cancel</button>
+    </div>`);
+  $('#rsX').addEventListener('click', closeModal);
+  $('#rsGo').addEventListener('click', async (e) => {
+    const err = $('#rsErr'); err.hidden = true;
+    try {
+      await busy(e.currentTarget, 'Saving…', () => rpcAuth('tuna_admin_escalation_resolve', {
+        p_id: Number(id), p_action: action, p_note: $('#rsNote').value
+      }));
+      closeModal();
+      toast(solving ? 'Ticket solved. Agent notified.' : 'Ticket rejected.', solving ? 'good' : '');
+      loadEscalations();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  });
+}
