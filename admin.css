@@ -402,3 +402,14 @@ tr.rowdim td { opacity: .55; }
 .agreecheck input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--crimson); cursor: pointer; }
 .agreecheck span { flex: 1; font-size: 13.5px; }
 .agreecheck input[type=number] { padding: 6px 9px; }
+
+/* the full squad, listed under the team name */
+.squad { display: flex; flex-direction: column; gap: 2px; margin-top: 3px; }
+.squad__m { font-size: 12px; color: var(--ink-2); }
+.squad__m .mono { color: var(--marigold); font-size: 11.5px; }
+.squad__m i {
+  display: inline-grid; place-items: center;
+  width: 15px; height: 15px; margin-right: 3px;
+  border-radius: 50%; background: var(--crimson); color: #fff;
+  font-style: normal; font-size: 9px; font-weight: 700;
+}

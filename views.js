@@ -1278,9 +1278,16 @@ function tournForm(t) {
     <div class="grid grid--2">
       <label class="field"><span class="label">Map</span>
         <select id="tfMap"></select></label>
-      <label class="field"><span class="label">Total slots</span>
-        <input type="number" id="tfSlots" value="${t?.max_slots ?? 48}"></label>
+      <label class="field"><span class="label">Players per team</span>
+        <select id="tfPpt">
+          ${[1,2,3,4,5,6].map((n) => `<option value="${n}" ${(t?.players_per_team ?? 1) === n ? 'selected' : ''}>
+            ${n === 1 ? 'Solo (1)' : n + ' per team'}</option>`).join('')}
+        </select></label>
     </div>
+
+    <label class="field"><span class="label">Total slots</span>
+      <input type="number" id="tfSlots" value="${t?.max_slots ?? 48}">
+      <span class="label" style="margin-top:4px;color:var(--ink-3)" id="tfSlotHint"></span></label>
 
     <label class="field"><span class="label">Banner image</span>
       <div class="filepick"><input type="file" id="tfFile" accept="image/jpeg,image/png,image/webp">
@@ -1343,6 +1350,18 @@ function tournForm(t) {
   fillGameLists();
   $('#tfGame').addEventListener('change', fillGameLists);
 
+  /* Slots mean teams once a squad size is set, so say so plainly. */
+  const slotHint = () => {
+    const ppt = parseInt($('#tfPpt').value, 10) || 1;
+    const slots = parseInt($('#tfSlots').value, 10) || 0;
+    $('#tfSlotHint').textContent = ppt > 1
+      ? `${slots} teams = ${slots * ppt} players in the lobby`
+      : `${slots} individual players`;
+  };
+  $('#tfPpt').addEventListener('change', slotHint);
+  $('#tfSlots').addEventListener('input', slotHint);
+  slotHint();
+
   $('#tfFile').addEventListener('change', () => {
     const f = $('#tfFile').files[0];
     $('#tfFileLabel').textContent = f ? `✓ ${f.name.slice(0, 24)}` : 'Choose banner image';
@@ -1375,6 +1394,7 @@ function tournForm(t) {
           p_prize_3: parseInt($('#tfP3').value, 10) || 0,
           p_per_kill: parseInt($('#tfKill').value, 10) || 0,
           p_max_slots: parseInt($('#tfSlots').value, 10) || 48,
+          p_players_per_team: parseInt($('#tfPpt').value, 10) || 1,
           p_rules: $('#tfRules').value,
           p_status: $('#tfStatus').value
         });
@@ -1391,6 +1411,8 @@ async function tournPlayers(d) {
   openModal(`
     <h2>Registered players</h2>
     <p class="sub">${esc(d.title)}</p>
+    <input type="search" id="tpSearch" style="margin-bottom:12px"
+           placeholder="Search game name, game ID, team, player or phone…">
     <div class="alert alert--bad" id="tpErr" hidden></div>
     <div id="tpBody">${skeleton(50, 3)}</div>
     <div class="row" style="margin-top:14px">
@@ -1398,27 +1420,37 @@ async function tournPlayers(d) {
     </div>`);
   $('#tpDone').addEventListener('click', () => { closeModal(); loadTournaments(); });
 
-  const paint = async () => {
+  const paint = async (q = '') => {
     let rows = [];
-    try { rows = await rpcAuth('tuna_admin_tournament_players', { p_id: Number(d.tp) }) || []; }
+    try { rows = await rpcAuth('tuna_admin_tournament_players',
+            { p_id: Number(d.tp), p_q: q }) || []; }
     catch (e) { $('#tpBody').innerHTML = `<div class="alert alert--bad">${esc(e.message)}</div>`; return; }
 
     $('#tpBody').innerHTML = rows.length ? `<div class="tablewrap"><table>
-      <thead><tr><th>#</th><th>Name</th><th>App ID (phone)</th><th>Game name</th>
-        <th>Game ID</th><th>Status</th><th></th></tr></thead>
+      <thead><tr><th>#</th><th>Registered by</th><th>App ID (phone)</th><th>Team / squad</th>
+        <th>Status</th><th></th></tr></thead>
       <tbody>${rows.map((r) => `<tr>
         <td class="num">${r.slot_no ?? '—'}</td>
         <td><div class="row" style="gap:8px;flex-wrap:nowrap">${avatar(r)}<b>${esc(r.name)}</b></div></td>
         <td class="num">${esc(r.phone)}</td>
-        <td><b>${esc(r.ingame_name)}</b></td>
-        <td class="num" style="color:var(--marigold)">${esc(r.ingame_uid)}</td>
+        <td>
+          ${r.team_name ? `<b>${esc(r.team_name)}</b>` : ''}
+          <div class="squad">${(r.roster && r.roster.length
+            ? r.roster
+            : [{ name: r.ingame_name, uid: r.ingame_uid }]).map((m, i) => `
+            <span class="squad__m">${i === 0 && (r.roster?.length > 1) ? '<i>C</i>' : ''}
+              ${esc(m.name)} <span class="mono">${esc(m.uid)}</span></span>`).join('')}
+          </div>
+        </td>
         <td>${pill(r.status)}</td>
         <td>${r.status === 'pending' ? `<div class="row" style="gap:6px;flex-wrap:nowrap">
             <button class="btn btn--win btn--xs" data-ok="${r.id}">Confirm</button>
             <button class="btn btn--ghost btn--xs" data-no="${r.id}">Reject</button></div>`
           : '<span class="xs muted">done</span>'}</td>
       </tr>`).join('')}</tbody></table></div>`
-      : empty('Nobody yet', 'Registrations appear here as they come in.');
+      : empty(q ? 'No match' : 'Nobody yet',
+              q ? `Nothing here matches "${esc(q)}".`
+                : 'Registrations appear here as they come in.');
 
     $$('#tpBody [data-ok]').forEach((b) => b.addEventListener('click', async () => {
       try {
@@ -1438,6 +1470,10 @@ async function tournPlayers(d) {
     }));
   };
   await paint();
+
+  /* search hits the database, so a teammate inside a roster is findable */
+  $('#tpSearch').addEventListener('input', debounce(() =>
+    paint($('#tpSearch').value.trim()), 280));
 }
 
 /* ───────────────────────────────────── publishing the room details ──────── */
